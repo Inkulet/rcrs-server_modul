@@ -8,7 +8,7 @@
 
 - `module/calculator.py` - реализация формализации полезности 2.2;
 - `module/strategy.py` - Strategy-паттерн выбора цели;
-- `module/agents.py` - `BaseAgent` и специализированные агенты;
+- `module/agents.py` c `BaseAgent` и специализированные агенты;
 - `module/network/` - интеграция с kernel:
   - `rcrs_client.py` (TCP клиент),
   - `world_model.py` (локальная модель мира),
@@ -16,13 +16,13 @@
   - `protocol.py` (protobuf framing + AK/KA пакеты),
   - `agent_runtime.py` (Receive->Parse->Adapt->Think->Act),
   - `snapshot.py` (live snapshot в JSON);
-- `module/ui/dashboard.py` — Streamlit UI (`Sample Mode` и `Live Mode`);
-- `module/data/live_state.json` — shared state между агентами и UI.
+- `module/ui/dashboard.py` - Streamlit UI (`Sample Mode` и `Live Mode`);
+- `module/data/live_state.json` - shared state между агентами и UI.
 
 ## 4. Структура проекта
 
 ```text
-diplom/
+rcrs-server_modul/
 ├── app.py
 ├── README.md
 ├── .gitignore
@@ -67,7 +67,6 @@ diplom/
 ### 5.0. Быстрый запуск (одна команда)
 
 ```bash
-cd .../diplom
 source venv/bin/activate
 python launcher.py
 ```
@@ -90,7 +89,7 @@ python launcher.py --no-browser
 
 Логи RCRS для каждого запуска launcher сохраняются в отдельной папке:
 
-- `.../diplom/rcrs-server/logs/launcher-YYYYMMDD-HHMMSS`
+- `.../rcrs-server_modul/rcrs-server/logs/launcher-YYYYMMDD-HHMMSS`
 
 ### 5.1. Предусловия
 - Тестированно на MacBook Pro: Apple M3 Pro, macOS 26.2 (25C56)
@@ -100,7 +99,7 @@ python launcher.py --no-browser
   - `/scripts/platforms/python/URN.py`,
   - `/scripts/platforms/python/RCRSProto_pb2.py`.
 
-Если `rcrs-server` расположен не в `diplom/rcrs-server`, укажите путь явно:
+Если `rcrs-server` расположен не в `rcrs-server_modul/rcrs-server`, укажите путь явно:
 
 ```bash
 export RCRS_PLATFORM_PYTHON_DIR="/absolute/path/to/rcrs-server/scripts/platforms/python"
@@ -109,7 +108,6 @@ export RCRS_PLATFORM_PYTHON_DIR="/absolute/path/to/rcrs-server/scripts/platforms
 ### 5.2. Установка Python-окружения
 
 ```bash
-cd .../diplom
 python3 -m venv venv
 source venv/bin/activate
 pip install -r module/requirements.txt
@@ -120,7 +118,7 @@ pip install -r module/requirements.txt
 Терминал 1:
 
 ```bash
-cd .../diplom/rcrs-server
+cd .../rcrs-server_modul/rcrs-server
 ./gradlew completeBuild
 cd scripts
 ./start.sh -m ../maps/test/map -c ../maps/test/config
@@ -134,7 +132,7 @@ cd scripts
 Терминал 2 (все три агента сразу):
 
 ```bash
-cd .../diplom
+cd .../rcrs-server_modul
 source venv/bin/activate
 python -m module.run_agents --host 127.0.0.1 --port <kernel_port_from_config>
 ```
@@ -159,7 +157,7 @@ python -m module.main_agent --host 127.0.0.1 --port <kernel_port_from_config> --
 Терминал 3:
 
 ```bash
-cd .../diplom
+cd .../rcrs-server_modul
 source venv/bin/activate
 streamlit run app.py
 ```
@@ -206,7 +204,7 @@ streamlit run app.py
 ## 8. Тестирование
 
 ```bash
-cd .../diplom
+cd .../rcrs-server_modul
 source venv/bin/activate
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
