@@ -1,34 +1,8 @@
-# Дипломный программный модуль: Utility-Based управление агентами RCRS
+#  Программный модуль
 
 ## 1. Назначение
 
-Репозиторий содержит дипломный программный модуль многоагентного управления в RoboCup Rescue Simulation (RCRS):
-
-- математическое принятие решений для `FireBrigade`, `AmbulanceTeam`, `PoliceForce`;
-- сетевой мост к реальному `rcrs-server` (TCP + protobuf);
-- UI-дэшборд (Streamlit) для анализа Utility-матрицы и логики выбора цели.
-
 ## 2. Научная основа и инварианты
-
-Базисом является `documents/2.2.md`.
-
-В коде **не изменяются формулы**:
-
-\[
-i^* = \arg\max_{t_i \in T(t)} U_{ij}(t)
-\]
-
-\[
-U_{ij}(t)=w_c\cdot f_{urgency}(t_i)-\left(w_d\cdot f_{dist}(d_{ij})+w_e\cdot f_{effort}(t_i)+w_n\cdot f_{social}(N_i)\right)
-\]
-
-Реализованы:
-
-- `TTL` c правилом `Damage=0 -> inf`;
-- факторы `f_urgency`, `f_dist`, `f_effort`, `f_social`;
-- pre-filter алгоритма раздела 4;
-- детерминированный выбор цели с гистерезисом `C_switch`;
-- исправление self-reference для `PoliceForce`.
 
 ## 3. Архитектура
 
@@ -93,7 +67,7 @@ diplom/
 ### 5.0. Быстрый запуск (одна команда)
 
 ```bash
-cd /Users/glebpashkov/diplom
+cd .../diplom
 source venv/bin/activate
 python launcher.py
 ```
@@ -116,10 +90,10 @@ python launcher.py --no-browser
 
 Логи RCRS для каждого запуска launcher сохраняются в отдельной папке:
 
-- `/Users/glebpashkov/diplom/rcrs-server/logs/launcher-YYYYMMDD-HHMMSS`
+- `.../diplom/rcrs-server/logs/launcher-YYYYMMDD-HHMMSS`
 
 ### 5.1. Предусловия
-
+- Тестированно на MacBook Pro: Apple M3 Pro, macOS 26.2 (25C56)
 - Python 3.11+;
 - Java/JDK (для `rcrs-server`);
 - локальная копия `rcrs-server`, содержащая:
@@ -135,7 +109,7 @@ export RCRS_PLATFORM_PYTHON_DIR="/absolute/path/to/rcrs-server/scripts/platforms
 ### 5.2. Установка Python-окружения
 
 ```bash
-cd /Users/glebpashkov/diplom
+cd .../diplom
 python3 -m venv venv
 source venv/bin/activate
 pip install -r module/requirements.txt
@@ -146,7 +120,7 @@ pip install -r module/requirements.txt
 Терминал 1:
 
 ```bash
-cd /Users/glebpashkov/diplom/rcrs-server
+cd .../diplom/rcrs-server
 ./gradlew completeBuild
 cd scripts
 ./start.sh -m ../maps/test/map -c ../maps/test/config
@@ -160,7 +134,7 @@ cd scripts
 Терминал 2 (все три агента сразу):
 
 ```bash
-cd /Users/glebpashkov/diplom
+cd .../diplom
 source venv/bin/activate
 python -m module.run_agents --host 127.0.0.1 --port <kernel_port_from_config>
 ```
@@ -185,7 +159,7 @@ python -m module.main_agent --host 127.0.0.1 --port <kernel_port_from_config> --
 Терминал 3:
 
 ```bash
-cd /Users/glebpashkov/diplom
+cd .../diplom
 source venv/bin/activate
 streamlit run app.py
 ```
@@ -232,7 +206,7 @@ streamlit run app.py
 ## 8. Тестирование
 
 ```bash
-cd /Users/glebpashkov/diplom
+cd .../diplom
 source venv/bin/activate
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
@@ -252,5 +226,3 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - `venv/`,
 - `rcrs-server/`,
 - кэши, логи, артефакты IDE/OS.
-
-Публикуется только дипломный код, документация и тесты.
