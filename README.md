@@ -6,10 +6,10 @@
 
 ## 3. Архитектура
 
-- `module/calculator.py` — реализация формализации полезности 2.2;
-- `module/strategy.py` — Strategy-паттерн выбора цели;
-- `module/agents.py` — `BaseAgent` и специализированные агенты;
-- `module/network/` — интеграция с kernel:
+- `module/calculator.py` - реализация формализации полезности 2.2;
+- `module/strategy.py` - Strategy-паттерн выбора цели;
+- `module/agents.py` - `BaseAgent` и специализированные агенты;
+- `module/network/` - интеграция с kernel:
   - `rcrs_client.py` (TCP клиент),
   - `world_model.py` (локальная модель мира),
   - `adapter.py` (Adapter Pattern: server -> model schema),
