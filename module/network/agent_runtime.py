@@ -163,6 +163,16 @@ class AgentRuntime:
         if agent_state.type == AgentType.AMBULANCE_TEAM and agent_state.resources.is_transporting:
             if self._is_refuge_area(agent_area):
                 return build_ak_unload(agent_id=agent_id, time=tick), "AK_UNLOAD", "Transporting+Refuge"
+            nearest_refuge_area = self._choose_nearest_refuge_area(agent_area=agent_area, refuges=refuges)
+            if nearest_refuge_area is not None:
+                move_path = self.world_model.shortest_path(agent_area, nearest_refuge_area)
+                if move_path:
+                    return (
+                        build_ak_move(agent_id=agent_id, time=tick, path=move_path),
+                        "AK_MOVE",
+                        "TransportingToRefuge",
+                    )
+            return build_ak_rest(agent_id=agent_id, time=tick), "AK_REST", "TransportingNoRefugePath"
 
         if decision_action in {"NO_TARGET", "ERROR", "SKIP_BUSY"}:
             return build_ak_rest(agent_id=agent_id, time=tick), "AK_REST", "Fallback"
@@ -240,3 +250,30 @@ class AgentRuntime:
         if entity is None:
             return False
         return entity.urn == int(URN.Entity.REFUGE)
+
+    def _choose_nearest_refuge_area(self, agent_area: Optional[int], refuges) -> Optional[int]:
+        """Для транспортировки выбираем ближайшее убежище детерминированно по graph-distance и entity_id."""
+        if agent_area is None:
+            return None
+
+        candidate_refuge_ids: List[int] = []
+        for refuge in refuges:
+            refuge_id = refuge.entity_id
+            if refuge_id is None:
+                continue
+            candidate_refuge_ids.append(int(refuge_id))
+
+        if not candidate_refuge_ids:
+            return None
+
+        def refuge_sort_key(refuge_id: int):
+            distance = self.world_model.shortest_distance(agent_area, refuge_id)
+            safe_distance = float("inf") if distance is None else float(distance)
+            return (safe_distance, refuge_id)
+
+        ordered_refuges = sorted(candidate_refuge_ids, key=refuge_sort_key)
+        for refuge_id in ordered_refuges:
+            path = self.world_model.shortest_path(agent_area, refuge_id)
+            if path:
+                return refuge_id
+        return None

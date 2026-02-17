@@ -76,7 +76,11 @@ class WorldModelAdapter:
             id=int(agent_id),
             type=agent_type,
             position=Position(entity_id=area_id, x=x, y=y),
-            state=AgentOperationalState.IDLE,
+            state=(
+                AgentOperationalState.TRANSPORTING
+                if agent_type == AgentType.AMBULANCE_TEAM and is_transporting
+                else AgentOperationalState.IDLE
+            ),
             resources=Resources(water_quantity=water_quantity, is_transporting=is_transporting),
         )
 
@@ -109,7 +113,11 @@ class WorldModelAdapter:
                     id=agent_id,
                     type=urn_to_type[entity.urn],
                     position=Position(entity_id=area_id, x=x, y=y),
-                    state=AgentOperationalState.IDLE,
+                    state=(
+                        AgentOperationalState.TRANSPORTING
+                        if urn_to_type[entity.urn] == AgentType.AMBULANCE_TEAM and self._is_transporting(agent_id)
+                        else AgentOperationalState.IDLE
+                    ),
                     resources=Resources(water_quantity=water_quantity, is_transporting=self._is_transporting(agent_id)),
                 )
             )
@@ -215,7 +223,7 @@ class WorldModelAdapter:
         if mapped_type == EntityType.BUILDING:
             fieryness = self._safe_int_in_range(
                 entity.properties.get(int(URN.Property.FIERYNESS)),
-                low=0,
+                low=1,
                 high=8,
                 default=None,
                 warnings=warnings,
@@ -394,7 +402,7 @@ class WorldModelAdapter:
         warnings: List[str],
         field_name: str,
     ) -> Optional[int]:
-        """Диапазонная проверка нужна для полей с конечным доменом (например Fieryness 0..8)."""
+        """Диапазонная проверка нужна для полей с конечным доменом (например Fieryness 1..8)."""
         safe_value = self._safe_non_negative_int(value=value, default=default, warnings=warnings, field_name=field_name)
         if safe_value is None:
             return default

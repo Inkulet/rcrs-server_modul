@@ -31,13 +31,21 @@ class LiveStateStore:
             current = self._read_snapshot()
             agents = current.get("agents", {})
 
-            agent_state = agent_payload.get("agent_state", {})
-            agent_id = str(agent_state.get("id", "unknown"))
+            # Сначала приводим payload к JSON-safe структуре: runtime передает dataclass объекты,
+            # а прямой .get() по dataclass ломает обновление snapshot.
+            safe_payload = self._to_json_safe(agent_payload)
+            if not isinstance(safe_payload, dict):
+                safe_payload = {}
+
+            agent_state = safe_payload.get("agent_state", {})
+            agent_id = "unknown"
+            if isinstance(agent_state, dict):
+                agent_id = str(agent_state.get("id", "unknown"))
 
             agents[agent_id] = {
                 "tick": int(tick),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                "payload": self._to_json_safe(agent_payload),
+                "payload": safe_payload,
                 "warnings": list(warnings or []),
             }
 
