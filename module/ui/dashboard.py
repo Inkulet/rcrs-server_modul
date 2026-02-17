@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import os
 import copy
 import json
 import math
+import signal
+import subprocess
+import sys
 import threading
+import time
+from datetime import datetime
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,6 +44,10 @@ PROFILE_CONSTANT_KEYS = [
     "epsilon",
     "c_switch",
 ]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+UI_AGENTS_LOG_PATH = PROJECT_ROOT / "module" / "data" / "ui_agents.log"
+UI_AGENTS_STATE_PATH = PROJECT_ROOT / "module" / "data" / "run_agents_state.json"
+PERF_HISTORY_LIMIT = 360
 
 
 @dataclass
@@ -64,6 +74,23 @@ class AuditResult:
     passed_checks: int
     failed_messages: List[str]
     checks_table: List[Dict[str, Any]]
+
+
+@dataclass
+class LivePerfRow:
+    """Агрегированная строка performance-метрик по агенту за окно последних 60 секунд."""
+
+    agent_id: str
+    agent_type: str
+    tick: int
+    tps_instant: Optional[float]
+    tps_avg_60s: Optional[float]
+    action: str
+    command: str
+    target: str
+    non_rest_ratio_60s: float
+    best_utility: Optional[float]
+    warnings_count: int
 
 
 def _apply_visual_theme() -> None:
@@ -256,6 +283,519 @@ def _safe_int(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_iso_utc_timestamp(value: Any) -> Optional[float]:
+    """Парсер timestamp нужен для расчета ticks/sec и устойчив к формату с суффиксом Z."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        return float(datetime.fromisoformat(normalized).timestamp())
+    except ValueError:
+        return None
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Проверка PID позволяет UI показывать реальный статус процесса launcher-а агентов."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _wait_pid_exit(pid: int, timeout_sec: float) -> bool:
+    """Ожидание завершения после сигнала нужно для корректного graceful-stop всей process-group."""
+    deadline = time.monotonic() + max(0.1, float(timeout_sec))
+    while time.monotonic() < deadline:
+        if not _is_pid_alive(pid):
+            return True
+        time.sleep(0.1)
+    return not _is_pid_alive(pid)
+
+
+def _list_process_table() -> List[Tuple[int, str]]:
+    """Список процессов нужен для обнаружения внешнего run_agents, запущенного не из UI-сессии."""
+    try:
+        # `ps` доступен на macOS/Linux и не зависит от наличия pgrep в системе.
+        result = subprocess.run(  # noqa: S603
+            ["ps", "-axo", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+    rows: List[Tuple[int, str]] = []
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        pid = _safe_int(parts[0])
+        command = parts[1].strip()
+        if pid is None or pid <= 0 or not command:
+            continue
+        rows.append((pid, command))
+    return rows
+
+
+def _discover_external_run_agents_pids() -> List[int]:
+    """Поиск внешнего `module.run_agents` позволяет UI останавливать launcher-агентов без state-файла."""
+    current_pid = os.getpid()
+    discovered: List[int] = []
+    for pid, command in _list_process_table():
+        if pid == current_pid:
+            continue
+        if " -m module.run_agents" not in f" {command}":
+            continue
+        if "streamlit" in command:
+            continue
+        if not _is_pid_alive(pid):
+            continue
+        discovered.append(pid)
+    return sorted(set(discovered))
+
+
+def _read_ui_agents_state_file() -> Dict[str, Any]:
+    """State-файл run_agents нужен для восстановления контроля после перезапуска Streamlit с пустой сессией."""
+    if not UI_AGENTS_STATE_PATH.exists():
+        return {}
+    try:
+        raw_data = json.loads(UI_AGENTS_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    return raw_data if isinstance(raw_data, dict) else {}
+
+
+def _extract_pids_from_ui_agents_state(state_data: Dict[str, Any]) -> Tuple[Optional[int], List[int]]:
+    """PID извлекаем централизованно, чтобы stop/status работали одинаково для launcher и UI-кнопки."""
+    parent_pid = _safe_int(state_data.get("parent_pid"))
+    child_pids: List[int] = []
+    raw_children = state_data.get("children", [])
+    if isinstance(raw_children, list):
+        for raw_child in raw_children:
+            if not isinstance(raw_child, dict):
+                continue
+            child_pid = _safe_int(raw_child.get("pid"))
+            if child_pid is None or child_pid <= 0:
+                continue
+            child_pids.append(child_pid)
+    return parent_pid, sorted(set(child_pids))
+
+
+def _cleanup_stale_ui_agents_state_file() -> None:
+    """Очищаем только полностью stale state-файл, чтобы актуальный PID не потерялся между перерендерами UI."""
+    if not UI_AGENTS_STATE_PATH.exists():
+        return
+    state_data = _read_ui_agents_state_file()
+    state_parent_pid, state_child_pids = _extract_pids_from_ui_agents_state(state_data)
+    if state_parent_pid is not None and _is_pid_alive(state_parent_pid):
+        return
+    if any(_is_pid_alive(pid) for pid in state_child_pids):
+        return
+    try:
+        UI_AGENTS_STATE_PATH.unlink()
+    except OSError:
+        pass
+
+
+def _resolve_active_ui_agent_processes() -> Tuple[Optional[int], List[int]]:
+    """Сливаем session PID и state-file PID, чтобы UI не терял управление агентами после hot-reload."""
+    session_parent_pid = _safe_int(st.session_state.get("live_agents_pid"))
+    if session_parent_pid is not None and not _is_pid_alive(session_parent_pid):
+        st.session_state["live_agents_pid"] = None
+        session_parent_pid = None
+
+    state_data = _read_ui_agents_state_file()
+    state_parent_pid, state_child_pids = _extract_pids_from_ui_agents_state(state_data)
+    alive_child_pids = [pid for pid in state_child_pids if _is_pid_alive(pid)]
+
+    alive_parent_pid: Optional[int] = None
+    for candidate_pid in [session_parent_pid, state_parent_pid]:
+        if candidate_pid is None:
+            continue
+        if _is_pid_alive(candidate_pid):
+            alive_parent_pid = candidate_pid
+            break
+
+    if alive_parent_pid is not None:
+        st.session_state["live_agents_pid"] = int(alive_parent_pid)
+
+    external_parent_pids = _discover_external_run_agents_pids()
+    if alive_parent_pid is None and external_parent_pids:
+        alive_parent_pid = int(external_parent_pids[0])
+        st.session_state["live_agents_pid"] = int(alive_parent_pid)
+
+    return alive_parent_pid, sorted(set(alive_child_pids))
+
+
+def _terminate_pid(pid: int) -> bool:
+    """Пошаговая эскалация SIGINT->SIGTERM->SIGKILL нужна для корректного cleanup Python-агента."""
+    if not _is_pid_alive(pid):
+        return True
+    try:
+        os.kill(pid, signal.SIGINT)
+    except ProcessLookupError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    if _wait_pid_exit(pid, timeout_sec=2.0):
+        return True
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    if _wait_pid_exit(pid, timeout_sec=2.0):
+        return True
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    return _wait_pid_exit(pid, timeout_sec=1.0)
+
+
+def _terminate_process_group(group_leader_pid: int) -> bool:
+    """Остановка всей process-group обязательна, иначе дочерние main_agent остаются висеть и занимают слоты."""
+    if group_leader_pid <= 0:
+        return True
+    if not _is_pid_alive(group_leader_pid):
+        return True
+    try:
+        os.killpg(group_leader_pid, signal.SIGINT)
+    except ProcessLookupError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    if _wait_pid_exit(group_leader_pid, timeout_sec=3.0):
+        return True
+
+    try:
+        os.killpg(group_leader_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    if _wait_pid_exit(group_leader_pid, timeout_sec=3.0):
+        return True
+
+    try:
+        os.killpg(group_leader_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    return _wait_pid_exit(group_leader_pid, timeout_sec=1.0)
+
+
+def _stop_ui_agents_process() -> Tuple[bool, str]:
+    """Останавливает процесс `module.run_agents` и его дочерние процессы агентов."""
+    parent_pid, child_pids = _resolve_active_ui_agent_processes()
+    external_parent_pids = _discover_external_run_agents_pids()
+    parent_candidates = sorted(
+        {
+            pid
+            for pid in ([parent_pid] + external_parent_pids)
+            if pid is not None and _is_pid_alive(pid)
+        }
+    )
+    if not parent_candidates and not child_pids:
+        st.session_state["live_agents_pid"] = None
+        _cleanup_stale_ui_agents_state_file()
+        return False, "Процесс агентов не запущен."
+
+    try:
+        stopped_pids: List[int] = []
+        failed_pids: List[int] = []
+
+        if os.name != "nt":
+            for parent_candidate in parent_candidates:
+                if _terminate_process_group(parent_candidate):
+                    stopped_pids.append(parent_candidate)
+                else:
+                    failed_pids.append(parent_candidate)
+        elif parent_candidates:
+            for parent_candidate in parent_candidates:
+                if not _is_pid_alive(parent_candidate):
+                    continue
+                if _terminate_pid(parent_candidate):
+                    stopped_pids.append(parent_candidate)
+                else:
+                    failed_pids.append(parent_candidate)
+
+        # Даже после killpg добиваем children индивидуально: это защищает от случаев, когда parent уже умер.
+        for child_pid in child_pids:
+            if not _is_pid_alive(child_pid):
+                continue
+            if _terminate_pid(child_pid):
+                stopped_pids.append(child_pid)
+            else:
+                failed_pids.append(child_pid)
+
+        st.session_state["live_agents_pid"] = None
+        _cleanup_stale_ui_agents_state_file()
+
+        if failed_pids and not stopped_pids:
+            return False, f"Не удалось остановить процессы: {sorted(set(failed_pids))}"
+        if failed_pids:
+            return True, (
+                f"Частично остановлено. Успешно: {sorted(set(stopped_pids))}, "
+                f"ошибки: {sorted(set(failed_pids))}."
+            )
+        return True, f"Агенты остановлены: {sorted(set(stopped_pids))}."
+    except Exception as error:  # noqa: BLE001
+        return False, f"Не удалось остановить процесс агентов: {error}"
+
+
+def _start_ui_agents_process(
+    host: str,
+    port: int,
+    snapshot_path: Path,
+    tick_sleep: float,
+    profile_path: Optional[Path],
+) -> Tuple[bool, str]:
+    """Запускает `python -m module.run_agents`, который поднимает сразу FIRE/AMBULANCE/POLICE."""
+    existing_parent_pid, existing_child_pids = _resolve_active_ui_agent_processes()
+    external_parent_pids = _discover_external_run_agents_pids()
+    existing_pids = sorted(
+        {
+            pid
+            for pid in ([existing_parent_pid] + external_parent_pids + existing_child_pids)
+            if pid is not None and _is_pid_alive(pid)
+        }
+    )
+    if existing_pids:
+        return (
+            False,
+            f"Обнаружены уже запущенные агенты: {existing_pids}. "
+            "Нажмите «Остановить агентов», затем запустите снова.",
+        )
+
+    _cleanup_stale_ui_agents_state_file()
+
+    try:
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        UI_AGENTS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        UI_AGENTS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        return False, f"Не удалось подготовить директории: {error}"
+
+    command = [
+        sys.executable,
+        "-u",
+        "-m",
+        "module.run_agents",
+        "--host",
+        str(host),
+        "--port",
+        str(int(port)),
+        "--snapshot-path",
+        str(snapshot_path),
+        "--state-path",
+        str(UI_AGENTS_STATE_PATH),
+        "--tick-sleep",
+        str(float(tick_sleep)),
+    ]
+    if profile_path is not None:
+        command.extend(["--profile-path", str(profile_path)])
+
+    try:
+        with UI_AGENTS_LOG_PATH.open("a", encoding="utf-8") as log_file:
+            log_file.write(
+                f"\n=== UI START {datetime.now().isoformat()} "
+                f"host={host} port={port} snapshot={snapshot_path} ===\n"
+            )
+        log_stream = UI_AGENTS_LOG_PATH.open("a", encoding="utf-8")
+        process = subprocess.Popen(  # noqa: S603
+            command,
+            cwd=str(PROJECT_ROOT),
+            stdout=log_stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=(os.name != "nt"),
+        )
+        log_stream.close()
+    except Exception as error:  # noqa: BLE001
+        return False, f"Ошибка запуска процессов агентов: {error}"
+
+    # Если run_agents завершился сразу (например, KA_CONNECT_ERROR: No more agents),
+    # возвращаем понятную ошибку вместо ложного статуса RUNNING.
+    time.sleep(1.0)
+    early_exit_code = process.poll()
+    if early_exit_code is not None:
+        log_tail = _tail_file(UI_AGENTS_LOG_PATH, max_lines=25)
+        if "KA_CONNECT_ERROR: No more agents" in log_tail:
+            state_data = _read_ui_agents_state_file()
+            state_parent_pid, state_child_pids = _extract_pids_from_ui_agents_state(state_data)
+            detected_pids = sorted(
+                {
+                    pid
+                    for pid in ([state_parent_pid] + state_child_pids)
+                    if pid is not None and _is_pid_alive(pid)
+                }
+            )
+            if detected_pids:
+                st.session_state["live_agents_pid"] = int(detected_pids[0])
+                return (
+                    False,
+                    "Kernel отклонил подключение: No more agents. "
+                    f"Обнаружены уже активные процессы: {detected_pids}. "
+                    "Сначала остановите их кнопкой «Остановить агентов».",
+                )
+            return (
+                False,
+                "Kernel отклонил подключение: No more agents. "
+                "Проверьте, что не запущены другие агенты/launcher в параллель.",
+            )
+        return False, f"Процесс агентов завершился сразу (code={early_exit_code}). Проверьте логи."
+
+    st.session_state["live_agents_pid"] = int(process.pid)
+    st.session_state["live_agents_started_at"] = datetime.now().isoformat()
+    st.session_state["live_agents_command"] = " ".join(command)
+    st.session_state["live_agents_log_path"] = str(UI_AGENTS_LOG_PATH)
+    st.session_state["live_agents_state_path"] = str(UI_AGENTS_STATE_PATH)
+    return True, f"Запущены 3 агента через module.run_agents (pid={process.pid})."
+
+
+def _tail_file(path: Path, max_lines: int = 80) -> str:
+    """Tail логов помогает быстро увидеть причины отказа запуска прямо в UI."""
+    if not path.exists():
+        return "Лог-файл пока не создан."
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError as error:
+        return f"Не удалось прочитать лог: {error}"
+    if not lines:
+        return "Лог-файл пуст."
+    return "\n".join(lines[-max_lines:])
+
+
+def _ensure_perf_storage() -> Dict[str, List[Dict[str, Any]]]:
+    """История производительности хранится в session_state для вычисления скорости между обновлениями."""
+    if "live_perf_history" not in st.session_state or not isinstance(st.session_state["live_perf_history"], dict):
+        st.session_state["live_perf_history"] = {}
+    return st.session_state["live_perf_history"]
+
+
+def _extract_best_utility(payload: Dict[str, Any]) -> Optional[float]:
+    """Лучшая utility по текущему тику используется как быстрый индикатор качества выбранной цели."""
+    raw_rows = payload.get("utility_matrix", [])
+    if not isinstance(raw_rows, list):
+        return None
+
+    best_value: Optional[float] = None
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        utility_raw = raw_row.get("utility_score", raw_row.get("U_ij"))
+        utility_value = _safe_float(utility_raw)
+        if utility_value is None or not math.isfinite(utility_value):
+            continue
+        if best_value is None or utility_value > best_value:
+            best_value = utility_value
+    return best_value
+
+
+def _update_live_performance(snapshot: Dict[str, Any]) -> List[LivePerfRow]:
+    """Обновляет историю и строит срез метрик по всем агентам для вкладки Performance."""
+    history = _ensure_perf_storage()
+    agents = snapshot.get("agents", {})
+    if not isinstance(agents, dict):
+        return []
+
+    rows: List[LivePerfRow] = []
+    for agent_id, record in agents.items():
+        if not isinstance(record, dict):
+            continue
+        payload = record.get("payload", {})
+        if not isinstance(payload, dict):
+            continue
+
+        tick = _safe_int(record.get("tick"))
+        updated_at = _parse_iso_utc_timestamp(record.get("updated_at"))
+        if tick is None or updated_at is None:
+            continue
+
+        decision = payload.get("decision", {})
+        if not isinstance(decision, dict):
+            decision = {}
+        agent_state = payload.get("agent_state", {})
+        if not isinstance(agent_state, dict):
+            agent_state = {}
+
+        best_utility = _extract_best_utility(payload)
+        sample = {
+            "tick": int(tick),
+            "ts": float(updated_at),
+            "action": str(decision.get("action", "N/A")),
+            "command": str(decision.get("sent_command", "N/A")),
+            "target": str(decision.get("selected_target_id", "N/A")),
+            "best_utility": best_utility,
+        }
+
+        agent_history = history.setdefault(str(agent_id), [])
+        if not agent_history or int(tick) > int(agent_history[-1]["tick"]):
+            agent_history.append(sample)
+            if len(agent_history) > PERF_HISTORY_LIMIT:
+                del agent_history[0 : len(agent_history) - PERF_HISTORY_LIMIT]
+
+        current = agent_history[-1]
+        previous = agent_history[-2] if len(agent_history) >= 2 else None
+        tps_instant: Optional[float] = None
+        if previous is not None:
+            delta_t = float(current["ts"]) - float(previous["ts"])
+            delta_tick = int(current["tick"]) - int(previous["tick"])
+            if delta_t > 0:
+                tps_instant = float(delta_tick) / float(delta_t)
+
+        # Окно последних 60 секунд для устойчивой оценки скорости и доли REST.
+        cutoff = float(current["ts"]) - 60.0
+        window = [item for item in agent_history if float(item["ts"]) >= cutoff]
+        tps_avg_60s: Optional[float] = None
+        if len(window) >= 2:
+            delta_t = float(window[-1]["ts"]) - float(window[0]["ts"])
+            delta_tick = int(window[-1]["tick"]) - int(window[0]["tick"])
+            if delta_t > 0:
+                tps_avg_60s = float(delta_tick) / float(delta_t)
+
+        non_rest_commands = [
+            item for item in window if str(item.get("command", "")).strip().upper() not in {"", "N/A", "AK_REST"}
+        ]
+        non_rest_ratio = 0.0
+        if window:
+            non_rest_ratio = 100.0 * float(len(non_rest_commands)) / float(len(window))
+
+        warnings = record.get("warnings", [])
+        warnings_count = len(warnings) if isinstance(warnings, list) else 0
+
+        rows.append(
+            LivePerfRow(
+                agent_id=str(agent_id),
+                agent_type=str(agent_state.get("type", "UNKNOWN")),
+                tick=int(current["tick"]),
+                tps_instant=tps_instant,
+                tps_avg_60s=tps_avg_60s,
+                action=str(current.get("action", "N/A")),
+                command=str(current.get("command", "N/A")),
+                target=str(current.get("target", "N/A")),
+                non_rest_ratio_60s=non_rest_ratio,
+                best_utility=_safe_float(current.get("best_utility")),
+                warnings_count=warnings_count,
+            )
+        )
+
+    return sorted(rows, key=lambda row: row.agent_id)
 
 
 def _normalize_matrix_rows(raw_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -462,9 +1002,13 @@ def _evaluate_audit(state: DashboardState) -> AuditResult:
     return AuditResult(total_checks=total, passed_checks=passed, failed_messages=failed, checks_table=checks)
 
 
-def _render_audit_tab(audit: AuditResult) -> None:
+def _render_audit_tab(audit: Optional[AuditResult]) -> None:
     """Таблица аудита превращает «верим в модель» в измеряемый и проверяемый артефакт для комиссии."""
     st.subheader("Аудит соответствия матмодели 2.2")
+
+    if audit is None:
+        st.info("Нет данных агента для аудита. Запустите агентов и выберите активного агента.")
+        return
 
     if audit.total_checks == 0:
         st.info("Недостаточно данных для аудита (пустая матрица или нет видимых сущностей).")
@@ -644,6 +1188,154 @@ def _render_runbook() -> None:
     st.code("python -m unittest discover -s tests -p 'test_*.py' -v", language="bash")
 
     st.markdown('<div class="runbook"><b>4. Проверка в UI</b><br/>Выберите агента, откройте вкладку "Аудит 2.2" и убедитесь, что нет FAIL.</div>', unsafe_allow_html=True)
+
+
+def _render_live_launcher_panel(sidebar_state: Dict[str, Any]) -> None:
+    """Панель запуска/остановки поднимает сразу три Python-агента одной кнопкой через module.run_agents."""
+    st.subheader("Launcher агентов (Live)")
+    st.caption("Запускает FIRE/AMBULANCE/POLICE одной командой и пишет логи в module/data/ui_agents.log")
+
+    host = str(sidebar_state.get("agents_host", "127.0.0.1")).strip() or "127.0.0.1"
+    port = int(sidebar_state.get("agents_port", 27931))
+    tick_sleep = float(sidebar_state.get("agents_tick_sleep", 0.0))
+    snapshot_path = Path(str(sidebar_state.get("live_snapshot_path", DEFAULT_LIVE_STATE_PATH))).expanduser().resolve()
+    profile_path_raw = str(sidebar_state.get("agents_profile_path", "")).strip()
+    profile_path = Path(profile_path_raw).expanduser().resolve() if profile_path_raw else None
+
+    col_start, col_stop = st.columns(2)
+    with col_start:
+        if st.button("Запустить 3 агентов", key="live_agents_start_button", type="primary"):
+            started, message = _start_ui_agents_process(
+                host=host,
+                port=port,
+                snapshot_path=snapshot_path,
+                tick_sleep=tick_sleep,
+                profile_path=profile_path,
+            )
+            if started:
+                st.success(message)
+            else:
+                st.warning(message)
+
+    with col_stop:
+        if st.button("Остановить агентов", key="live_agents_stop_button"):
+            stopped, message = _stop_ui_agents_process()
+            if stopped:
+                st.success(message)
+            else:
+                st.info(message)
+
+    parent_pid, child_pids = _resolve_active_ui_agent_processes()
+    running_pids = sorted(
+        {
+            pid
+            for pid in ([parent_pid] + child_pids)
+            if pid is not None and _is_pid_alive(pid)
+        }
+    )
+    is_running = bool(running_pids)
+    if not is_running:
+        _cleanup_stale_ui_agents_state_file()
+
+    status_text = "RUNNING" if is_running else "STOPPED"
+    st.write(f"Статус: **{status_text}**")
+    if parent_pid is not None and _is_pid_alive(parent_pid):
+        st.write(f"PID: `{parent_pid}`")
+    if child_pids:
+        st.caption(f"PID дочерних агентов: {child_pids}")
+    if st.session_state.get("live_agents_command"):
+        st.caption(f"Команда: {st.session_state['live_agents_command']}")
+
+    log_path = Path(str(st.session_state.get("live_agents_log_path", UI_AGENTS_LOG_PATH))).expanduser().resolve()
+    with st.expander("Логи запуска агентов (tail)", expanded=False):
+        st.code(_tail_file(log_path, max_lines=100), language="text")
+
+
+def _render_live_performance_tab(
+    perf_rows: List[LivePerfRow],
+    snapshot: Optional[Dict[str, Any]] = None,
+    snapshot_path: Optional[Path] = None,
+) -> None:
+    """Performance-вкладка показывает скорость, решения и рабочую нагрузку сразу по всем агентам."""
+    st.subheader("Performance мониторинг (все агенты)")
+
+    if not perf_rows:
+        st.info("Пока нет live-метрик. Запустите агентов и дождитесь обновления snapshot.")
+        with st.expander("Диагностика snapshot", expanded=False):
+            if snapshot_path is not None:
+                st.write(f"Путь: `{snapshot_path}`")
+                if snapshot_path.exists():
+                    try:
+                        file_size = snapshot_path.stat().st_size
+                    except OSError:
+                        file_size = None
+                    st.write(f"Файл существует: `да` (размер: `{file_size}` байт)")
+                else:
+                    st.write("Файл существует: `нет`")
+            if snapshot is None:
+                st.write("Снимок: `не прочитан`")
+            else:
+                agents = snapshot.get("agents", {})
+                agents_count = len(agents) if isinstance(agents, dict) else 0
+                st.write(f"mode: `{snapshot.get('mode', 'N/A')}`")
+                st.write(f"tick: `{snapshot.get('tick', 'N/A')}`")
+                st.write(f"updated_at: `{snapshot.get('updated_at', 'N/A')}`")
+                st.write(f"agents в snapshot: `{agents_count}`")
+        return
+
+    avg_tps_values = [row.tps_avg_60s for row in perf_rows if row.tps_avg_60s is not None]
+    inst_tps_values = [row.tps_instant for row in perf_rows if row.tps_instant is not None]
+    mean_tps_60 = float(sum(avg_tps_values) / len(avg_tps_values)) if avg_tps_values else 0.0
+    mean_tps_inst = float(sum(inst_tps_values) / len(inst_tps_values)) if inst_tps_values else 0.0
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Агентов online", len(perf_rows))
+    col2.metric("Средний TPS (60s)", f"{mean_tps_60:.2f}")
+    col3.metric("TPS instant", f"{mean_tps_inst:.2f}")
+    col4.metric("Max tick", max(row.tick for row in perf_rows))
+
+    perf_df = pd.DataFrame(
+        [
+            {
+                "agent_id": row.agent_id,
+                "agent_type": row.agent_type,
+                "tick": row.tick,
+                "tps_instant": None if row.tps_instant is None else round(row.tps_instant, 3),
+                "tps_avg_60s": None if row.tps_avg_60s is None else round(row.tps_avg_60s, 3),
+                "action": row.action,
+                "command": row.command,
+                "target": row.target,
+                "non_rest_ratio_60s_%": round(row.non_rest_ratio_60s, 2),
+                "best_utility": None if row.best_utility is None else round(row.best_utility, 6),
+                "warnings": row.warnings_count,
+            }
+            for row in perf_rows
+        ]
+    )
+    st.dataframe(perf_df, width="stretch", hide_index=True)
+
+    history = _ensure_perf_storage()
+    chart_rows: List[Dict[str, Any]] = []
+    for agent_id, items in history.items():
+        if not isinstance(items, list):
+            continue
+        for item in items[-120:]:
+            ts = _safe_float(item.get("ts"))
+            tick = _safe_int(item.get("tick"))
+            if ts is None or tick is None:
+                continue
+            chart_rows.append(
+                {
+                    "time": datetime.fromtimestamp(ts),
+                    "agent": str(agent_id),
+                    "tick": int(tick),
+                }
+            )
+
+    if chart_rows:
+        tick_chart_df = pd.DataFrame(chart_rows).pivot_table(index="time", columns="agent", values="tick", aggfunc="last")
+        st.subheader("Динамика тиков агентов")
+        st.line_chart(tick_chart_df, width="stretch")
 
 
 def _render_profile_controls() -> None:
@@ -826,6 +1518,40 @@ def _sidebar_controls(mode: str, engine: Optional[SimulationEngine]) -> Dict[str
             if st.button("Обновить снимок", key="live_refresh"):
                 st.rerun()
 
+            st.markdown("---")
+            st.subheader("Запуск Python-агентов")
+            agents_host = st.text_input(
+                "Kernel host",
+                value=st.session_state.get("agents_host_default", "127.0.0.1"),
+                key="live_agents_host",
+            )
+            agents_port = st.number_input(
+                "Kernel port",
+                min_value=1,
+                max_value=65535,
+                value=int(st.session_state.get("agents_port_default", 27931)),
+                step=1,
+                key="live_agents_port",
+            )
+            agents_tick_sleep = st.number_input(
+                "Tick sleep (sec)",
+                min_value=0.0,
+                max_value=2.0,
+                value=float(st.session_state.get("agents_tick_sleep_default", 0.0)),
+                step=0.05,
+                key="live_agents_tick_sleep",
+            )
+            agents_profile_path = st.text_input(
+                "Profile path (optional)",
+                value="",
+                key="live_agents_profile_path",
+            )
+
+            sidebar_state["agents_host"] = agents_host
+            sidebar_state["agents_port"] = int(agents_port)
+            sidebar_state["agents_tick_sleep"] = float(agents_tick_sleep)
+            sidebar_state["agents_profile_path"] = agents_profile_path
+
     return sidebar_state
 
 
@@ -872,61 +1598,88 @@ def run_dashboard() -> None:
 
     _render_header(mode=mode, audience_mode=audience_mode)
 
+    dashboard_state: Optional[DashboardState] = None
+    perf_rows: List[LivePerfRow] = []
+    live_snapshot: Optional[Dict[str, Any]] = None
+    live_snapshot_path: Optional[Path] = None
+
     if mode == "Sample Mode":
         assert engine is not None
         agent_options = engine.get_agent_ids()
         if not agent_options:
             st.warning("В симуляции нет агентов.")
-            return
-
-        selected_agent_id = st.selectbox("Выберите агента", options=agent_options, index=0, key="sample_agent_select")
-        dashboard_state = _build_sample_dashboard_state(engine, int(selected_agent_id))
+        else:
+            selected_agent_id = st.selectbox("Выберите агента", options=agent_options, index=0, key="sample_agent_select")
+            dashboard_state = _build_sample_dashboard_state(engine, int(selected_agent_id))
     else:
         snapshot_path_raw = sidebar_state.get("live_snapshot_path", str(DEFAULT_LIVE_STATE_PATH))
         snapshot_path = Path(str(snapshot_path_raw)).expanduser().resolve()
         snapshot = load_live_state_snapshot(snapshot_path)
+        live_snapshot = snapshot
+        live_snapshot_path = snapshot_path
 
         if snapshot is None:
-            st.warning("Не удалось прочитать snapshot. Проверьте путь и запущены ли Python-агенты.")
-            return
-
-        agents = snapshot.get("agents", {})
-        if not isinstance(agents, dict) or not agents:
-            st.info("Snapshot загружен, но активных агентов пока нет.")
-            st.json(snapshot, expanded=False)
-            return
-
-        live_agent_ids = sorted(agents.keys(), key=lambda value: int(value) if str(value).isdigit() else str(value))
-        selected_agent_id = st.selectbox("Выберите live-агента", options=live_agent_ids, index=0, key="live_agent_select")
-
-        dashboard_state = _build_live_dashboard_state(snapshot_path=snapshot_path, selected_agent_id=str(selected_agent_id))
-        if dashboard_state is None:
-            st.warning("Не удалось собрать состояние выбранного live-агента.")
-            return
-
-    audit_result = _evaluate_audit(dashboard_state)
-
-    tab_names = ["Панель", "Аудит 2.2", "How to Run"]
-    if mode == "Sample Mode":
-        tab_names.append("Профиль матмодели")
-
-    tabs = st.tabs(tab_names)
-
-    with tabs[0]:
-        if audience_mode.startswith("Debug"):
-            _render_debug_panel(dashboard_state, audit_result)
+            st.warning("Snapshot пока не читается. Можно запустить агентов во вкладке Performance.")
         else:
-            _render_commission_panel(dashboard_state, audit_result)
+            perf_rows = _update_live_performance(snapshot)
+            agents = snapshot.get("agents", {})
+            if not isinstance(agents, dict) or not agents:
+                st.info("Snapshot загружен, но активных агентов пока нет.")
+            else:
+                live_agent_ids = sorted(agents.keys(), key=lambda value: int(value) if str(value).isdigit() else str(value))
+                selected_agent_id = st.selectbox(
+                    "Выберите live-агента",
+                    options=live_agent_ids,
+                    index=0,
+                    key="live_agent_select",
+                )
+                dashboard_state = _build_live_dashboard_state(snapshot_path=snapshot_path, selected_agent_id=str(selected_agent_id))
+                if dashboard_state is None:
+                    st.warning("Не удалось собрать состояние выбранного live-агента.")
 
-    with tabs[1]:
-        _render_audit_tab(audit_result)
-
-    with tabs[2]:
-        _render_runbook()
+    audit_result = _evaluate_audit(dashboard_state) if dashboard_state is not None else None
 
     if mode == "Sample Mode":
+        tabs = st.tabs(["Панель", "Аудит 2.2", "How to Run", "Профиль матмодели"])
+        with tabs[0]:
+            if dashboard_state is None:
+                st.info("Нет данных для отображения.")
+            elif audience_mode.startswith("Debug"):
+                _render_debug_panel(dashboard_state, audit_result if audit_result is not None else AuditResult(0, 0, [], []))
+            else:
+                _render_commission_panel(dashboard_state, audit_result if audit_result is not None else AuditResult(0, 0, [], []))
+        with tabs[1]:
+            _render_audit_tab(audit_result)
+        with tabs[2]:
+            _render_runbook()
         with tabs[3]:
             _render_profile_controls()
+        return
+
+    # Live mode tabs
+    tabs = st.tabs(["Панель", "Performance", "Аудит 2.2", "How to Run"])
+    with tabs[0]:
+        if dashboard_state is None:
+            st.info("Выберите активного агента после запуска процессов или обновления snapshot.")
+        elif audience_mode.startswith("Debug"):
+            _render_debug_panel(dashboard_state, audit_result if audit_result is not None else AuditResult(0, 0, [], []))
+        else:
+            _render_commission_panel(dashboard_state, audit_result if audit_result is not None else AuditResult(0, 0, [], []))
+
+    with tabs[1]:
+        _render_live_launcher_panel(sidebar_state)
+        st.markdown("---")
+        _render_live_performance_tab(
+            perf_rows=perf_rows,
+            snapshot=live_snapshot,
+            snapshot_path=live_snapshot_path,
+        )
+
+    with tabs[2]:
+        _render_audit_tab(audit_result)
+
+    with tabs[3]:
+        _render_runbook()
 
 
 if __name__ == "__main__":

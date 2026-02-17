@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import math
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from module.network.protocol import URN
@@ -182,11 +183,25 @@ class WorldModel:
         return []
 
     def shortest_distance(self, start_area_id: Optional[int], goal_area_id: Optional[int]) -> Optional[float]:
-        """Дистанция нужна как вход f_dist; при отсутствии пути возвращаем None для безопасной обработки."""
+        """Дистанция в coordinate-units согласована с диагональю карты для корректной нормализации f_dist."""
         path = self.shortest_path(start_area_id, goal_area_id)
         if not path:
             return None
-        return float(max(0, len(path) - 1))
+        if len(path) == 1:
+            return 0.0
+
+        total_distance = 0.0
+        for index in range(len(path) - 1):
+            start_x, start_y = self.get_area_coordinates(path[index])
+            goal_x, goal_y = self.get_area_coordinates(path[index + 1])
+            if None in {start_x, start_y, goal_x, goal_y}:
+                return float(max(0, len(path) - 1))
+
+            dx = float(goal_x) - float(start_x)
+            dy = float(goal_y) - float(start_y)
+            total_distance += math.sqrt(dx * dx + dy * dy)
+
+        return max(0.0, total_distance)
 
     def _reconstruct_path(self, parent: Dict[int, Optional[int]], goal: int) -> List[int]:
         """Восстановление пути отделено для читаемости и проверки корректности parent-дерева."""

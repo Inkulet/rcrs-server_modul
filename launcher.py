@@ -76,6 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ui-timeout", type=float, default=45.0, help="Максимум секунд ожидания готовности UI")
     parser.add_argument("--browser-delay", type=float, default=2.0, help="Задержка перед открытием вкладки браузера")
     parser.add_argument("--no-browser", action="store_true", help="Не открывать браузер автоматически")
+    parser.add_argument("--no-agents", action="store_true", help="Не запускать Python-агентов из launcher")
     parser.add_argument("--dry-run", action="store_true", help="Показать команды запуска без старта процессов")
     return parser.parse_args()
 
@@ -103,6 +104,7 @@ class Launcher:
         self._server_exit_noted = False
         self._kernel_port_failures = 0
         self._kernel_port_fail_threshold = 5
+        self._nonfatal_exit_noted: Set[str] = set()
 
     def run(self) -> None:
         """Полный сценарий запуска: kernel -> wait -> agents -> streamlit."""
@@ -116,7 +118,10 @@ class Launcher:
 
         self._start_kernel()
         self._wait_kernel_ready()
-        self._start_agents()
+        if bool(self.args.no_agents):
+            log_info("Запуск Python Agents отключён флагом --no-agents.")
+        else:
+            self._start_agents()
         self._start_streamlit()
         self._open_browser_if_enabled()
         log_ok("Все компоненты запущены. Для остановки нажмите Ctrl+C.")
@@ -271,6 +276,14 @@ class Launcher:
                     continue
                 exit_code = managed.process.poll()
                 if exit_code is None:
+                    continue
+                if managed.name == "Python Agents" and int(exit_code) == 0:
+                    if managed.name not in self._nonfatal_exit_noted:
+                        self._nonfatal_exit_noted.add(managed.name)
+                        log_wait(
+                            "Python Agents завершились штатно (code=0). "
+                            "Launcher продолжает работу kernel/UI."
+                        )
                     continue
                 raise RuntimeError(f"{managed.name} неожиданно завершился (code={exit_code})")
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from module.data_models import AgentType, EntityType
+from module.data_models import AgentOperationalState, AgentType, EntityType
 from module.network.adapter import WorldModelAdapter
 from module.network.protocol import URN
 from module.network.world_model import ServerEntity, WorldModel
@@ -140,6 +140,115 @@ class WorldModelAdapterTests(unittest.TestCase):
         self.assertIsNone(civilian.raw_sensor_data.damage)
         self.assertIsNone(civilian.raw_sensor_data.buriedness)
         self.assertGreater(len(adapted.warnings), 0)
+
+    def test_fieryness_zero_is_rejected_by_schema_range(self) -> None:
+        world = WorldModel()
+        world.entities = {
+            1: ServerEntity(
+                entity_id=1,
+                urn=int(URN.Entity.ROAD),
+                properties={
+                    int(URN.Property.X): 0,
+                    int(URN.Property.Y): 0,
+                    int(URN.Property.EDGES): [],
+                },
+            ),
+            10: ServerEntity(
+                entity_id=10,
+                urn=int(URN.Entity.FIRE_BRIGADE),
+                properties={int(URN.Property.POSITION): 1},
+            ),
+            20: ServerEntity(
+                entity_id=20,
+                urn=int(URN.Entity.BUILDING),
+                properties={
+                    int(URN.Property.X): 10,
+                    int(URN.Property.Y): 10,
+                    int(URN.Property.FIERYNESS): 0,
+                    int(URN.Property.TEMPERATURE): 100,
+                },
+            ),
+        }
+
+        adapter = WorldModelAdapter(world)
+        adapted = adapter.adapt(agent_id=10, agent_type=AgentType.FIRE_BRIGADE, visible_entity_ids=[20])
+        building = adapted.observation.visible_entities[0]
+        self.assertIsNone(building.raw_sensor_data.fieryness)
+        self.assertTrue(any("fieryness" in warning.lower() for warning in adapted.warnings))
+
+    def test_ambulance_transporting_state_is_mapped(self) -> None:
+        world = WorldModel()
+        world.entities = {
+            1: ServerEntity(
+                entity_id=1,
+                urn=int(URN.Entity.ROAD),
+                properties={
+                    int(URN.Property.X): 0,
+                    int(URN.Property.Y): 0,
+                    int(URN.Property.EDGES): [],
+                },
+            ),
+            10: ServerEntity(
+                entity_id=10,
+                urn=int(URN.Entity.AMBULANCE_TEAM),
+                properties={int(URN.Property.POSITION): 1},
+            ),
+            30: ServerEntity(
+                entity_id=30,
+                urn=int(URN.Entity.CIVILIAN),
+                properties={
+                    int(URN.Property.POSITION): 10,
+                    int(URN.Property.HP): 8000,
+                    int(URN.Property.DAMAGE): 10,
+                    int(URN.Property.BURIEDNESS): 0,
+                },
+            ),
+        }
+
+        adapter = WorldModelAdapter(world)
+        adapted = adapter.adapt(agent_id=10, agent_type=AgentType.AMBULANCE_TEAM, visible_entity_ids=[30])
+        self.assertTrue(adapted.observation.agent_state.resources.is_transporting)
+        self.assertEqual(adapted.observation.agent_state.state, AgentOperationalState.TRANSPORTING)
+
+
+class WorldModelDistanceTests(unittest.TestCase):
+    """Проверяем, что shortest_distance совпадает по единицам с координатной геометрией карты."""
+
+    def test_shortest_distance_uses_coordinate_length(self) -> None:
+        world = WorldModel()
+        world.entities = {
+            1: ServerEntity(
+                entity_id=1,
+                urn=int(URN.Entity.ROAD),
+                properties={
+                    int(URN.Property.X): 0,
+                    int(URN.Property.Y): 0,
+                    int(URN.Property.EDGES): [{"neighbour": 2}],
+                },
+            ),
+            2: ServerEntity(
+                entity_id=2,
+                urn=int(URN.Entity.ROAD),
+                properties={
+                    int(URN.Property.X): 3,
+                    int(URN.Property.Y): 0,
+                    int(URN.Property.EDGES): [{"neighbour": 1}, {"neighbour": 3}],
+                },
+            ),
+            3: ServerEntity(
+                entity_id=3,
+                urn=int(URN.Entity.ROAD),
+                properties={
+                    int(URN.Property.X): 6,
+                    int(URN.Property.Y): 0,
+                    int(URN.Property.EDGES): [{"neighbour": 2}],
+                },
+            ),
+        }
+
+        distance = world.shortest_distance(1, 3)
+        self.assertIsNotNone(distance)
+        self.assertAlmostEqual(float(distance), 6.0, places=6)
 
 
 if __name__ == "__main__":
