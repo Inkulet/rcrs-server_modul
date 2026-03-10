@@ -41,6 +41,7 @@ def social_factor(
     world_model: WorldModel,
     target_position: Position,
     agent_type: AgentType,
+    current_agent_id: int,
     radius: float = DEFAULT_RADIUS,
 ) -> float:
     """Здесь я считаю количество однотипных агентов в радиусе r вокруг цели."""
@@ -51,6 +52,8 @@ def social_factor(
 
     count = 0
     for agent in world_model.agents.values():
+        if agent.id == current_agent_id:
+            continue
         if agent.type != agent_type:
             continue
 

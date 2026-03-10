@@ -61,6 +61,7 @@ class UtilityAggregator:
                 world_model,
                 target_position,
                 agent_state.type,
+                current_agent_id=agent_state.id,
                 radius=social_radius,
             )
 

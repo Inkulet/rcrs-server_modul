@@ -26,6 +26,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+AVERAGE_SPEED = 1.0
+
 
 def main() -> None:
     """В этой функции я запускаю основной цикл симуляции и обрабатываю ошибки."""
@@ -73,11 +75,17 @@ def main() -> None:
             utilities = {}
             if filtered_tasks:
                 for entity in filtered_tasks:
+                    t_travel = entity.computed_metrics.path_distance / AVERAGE_SPEED
+                    buriedness = entity.raw_sensor_data.buriedness
+                    t_work = 0.0 if buriedness is None else buriedness / dispatcher.work_rate
                     utility = aggregator.calculate_utility(
                         agent_state=agent_state,
                         entity=entity,
                         world_model=world_model,
-                        target_position=agent_state.position,
+                        target_position=Position(entity_id=entity.id, x=0, y=0),
+                        t_travel=t_travel,
+                        t_work=t_work,
+                        social_radius=2000.0,
                     )
                     utilities[entity.id] = utility
             else:
