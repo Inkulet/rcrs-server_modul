@@ -18,14 +18,19 @@ from network.codec import (
     COMP_TARGET,
     COMP_TIME,
     COMP_UPDATES,
+    COMP_WATER,
     ENT_AMBULANCE_TEAM,
     ENT_BUILDING,
     ENT_CIVILIAN,
     ENT_FIRE_BRIGADE,
     ENT_REFUGE,
     ENT_ROAD,
+    MSG_AK_CLEAR,
+    MSG_AK_EXTINGUISH,
+    MSG_AK_LOAD,
     MSG_AK_MOVE,
     MSG_AK_REST,
+    MSG_AK_UNLOAD,
     PROP_BLOCKADES,
     PROP_BURIEDNESS,
     PROP_DAMAGE,
@@ -41,11 +46,14 @@ from network.codec import (
     URN_AK_CONNECT,
     URN_KA_CONNECT_OK,
     URN_KA_SENSE,
+    build_ak_clear,
     build_ak_connect,
     build_ak_extinguish,
+    build_ak_load,
     build_ak_move,
     build_ak_rescue,
     build_ak_rest,
+    build_ak_unload,
     pack_frame,
     parse_ka_connect_ok,
     parse_ka_sense,
@@ -172,6 +180,44 @@ class TestBuildCommands:
         assert proto.urn == URN_AK_CONNECT
         assert proto.components[COMP_NAME].stringValue == "test-agent"
         assert proto.components[COMP_VERSION].intValue == PROTOCOL_VERSION
+
+    def test_build_ak_extinguish_contains_target_and_water(self) -> None:
+        """Я проверяю: AKExtinguish содержит target_id и water в компонентах."""
+        frame = build_ak_extinguish(agent_id=3, time=10, target_id=200, water=8000)
+        proto = MessageProto()
+        proto.ParseFromString(frame[4:])
+        assert proto.urn == MSG_AK_EXTINGUISH
+        assert proto.components[COMP_AGENT_ID].entityID == 3
+        assert proto.components[COMP_TARGET].entityID == 200
+        assert proto.components[COMP_WATER].intValue == 8000
+        assert proto.components[COMP_TIME].intValue == 10
+
+    def test_build_ak_clear_contains_target(self) -> None:
+        """Я проверяю: AKClear содержит target_id завала."""
+        frame = build_ak_clear(agent_id=4, time=15, target_id=300)
+        proto = MessageProto()
+        proto.ParseFromString(frame[4:])
+        assert proto.urn == MSG_AK_CLEAR
+        assert proto.components[COMP_AGENT_ID].entityID == 4
+        assert proto.components[COMP_TARGET].entityID == 300
+
+    def test_build_ak_load_contains_target(self) -> None:
+        """Я проверяю: AKLoad содержит target_id гражданского для погрузки."""
+        frame = build_ak_load(agent_id=5, time=20, target_id=777)
+        proto = MessageProto()
+        proto.ParseFromString(frame[4:])
+        assert proto.urn == MSG_AK_LOAD
+        assert proto.components[COMP_AGENT_ID].entityID == 5
+        assert proto.components[COMP_TARGET].entityID == 777
+
+    def test_build_ak_unload_has_no_target(self) -> None:
+        """Я проверяю: AKUnload содержит agent_id и time, но не target."""
+        frame = build_ak_unload(agent_id=6, time=25)
+        proto = MessageProto()
+        proto.ParseFromString(frame[4:])
+        assert proto.urn == MSG_AK_UNLOAD
+        assert proto.components[COMP_AGENT_ID].entityID == 6
+        assert proto.components[COMP_TIME].intValue == 25
 
 
 # ===========================================================================
@@ -347,6 +393,16 @@ class TestParseKaSense:
         packet = parse_ka_sense(proto, agent_id=1, agent_type=AgentType.AMBULANCE_TEAM)
         assert packet.own_state.resources.is_transporting is False
 
+    def test_deleted_entity_ids_parsed(self) -> None:
+        """Я проверяю: deletes из ChangeSet попадают в deleted_entity_ids."""
+        proto = self._make_sense(agent_id=1, tick=3)
+        # Я добавляю удалённые сущности в ChangeSet.
+        proto.components[COMP_UPDATES].changeSet.deletes.append(42)
+        proto.components[COMP_UPDATES].changeSet.deletes.append(99)
+        packet = parse_ka_sense(proto, agent_id=1, agent_type=AgentType.FIRE_BRIGADE)
+        assert 42 in packet.deleted_entity_ids
+        assert 99 in packet.deleted_entity_ids
+
     def test_building_with_fieryness_zero_parses_ok(self) -> None:
         """Я проверяю: fieryness=0 (не горит) не вызывает ValidationError после исправления ge=0."""
         extra = [(200, ENT_BUILDING, [
@@ -368,8 +424,8 @@ class TestUrnConstants:
     """Я проверяю корректность значений URN-констант согласно Java-исходникам RCRS."""
 
     def test_prop_edges_value(self) -> None:
-        """Я проверяю: PROP_EDGES = 0x1211 (StandardPropertyURN.EDGES)."""
-        assert PROP_EDGES == 0x1211
+        """Я проверяю: PROP_EDGES = 0x1213 (StandardPropertyURN.EDGES, ordinal=19)."""
+        assert PROP_EDGES == 0x1213
 
     def test_prop_blockades_value(self) -> None:
         """Я проверяю: PROP_BLOCKADES = 0x1208."""

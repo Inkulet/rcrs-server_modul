@@ -176,3 +176,84 @@ class TestAgentStateFiltering:
             PreFilterDispatcher(work_rate=0.0)
         with pytest.raises(ValueError):
             PreFilterDispatcher(work_rate=-1.0)
+
+    def test_invalid_average_speed_raises_value_error(self) -> None:
+        """Я проверяю: average_speed ≤ 0 недопустим → конструктор кидает ValueError."""
+        with pytest.raises(ValueError):
+            PreFilterDispatcher(average_speed=0.0)
+        with pytest.raises(ValueError):
+            PreFilterDispatcher(average_speed=-5.0)
+
+
+# ===========================================================================
+# Тесты фильтрации для полиции и завалов
+# ===========================================================================
+
+
+class TestPoliceBlockadeFiltering:
+    """Я проверяю: полиция работает только с завалами (BLOCKADE)."""
+
+    def test_police_keeps_blockades(self) -> None:
+        """Я проверяю: POLICE_FORCE получает задачу типа BLOCKADE."""
+        agent = make_agent(agent_type=AgentType.POLICE_FORCE)
+        blockade = make_blockade(entity_id=50, repair_cost=500)
+        result = make_dispatcher().filter_tasks(agent, [blockade])
+        assert blockade in result
+
+    def test_police_filters_civilians(self) -> None:
+        """Я проверяю: POLICE_FORCE не получает задачи типа CIVILIAN."""
+        agent = make_agent(agent_type=AgentType.POLICE_FORCE)
+        civ = make_civilian(hp=10000, damage=50, buriedness=5, estimated_death_time=9999)
+        result = make_dispatcher().filter_tasks(agent, [civ])
+        assert result == []
+
+    def test_police_filters_buildings(self) -> None:
+        """Я проверяю: POLICE_FORCE не получает задачи типа BUILDING."""
+        agent = make_agent(agent_type=AgentType.POLICE_FORCE)
+        bld = make_building(fieryness=2)
+        result = make_dispatcher().filter_tasks(agent, [bld])
+        assert result == []
+
+    def test_ambulance_filters_blockades(self) -> None:
+        """Я проверяю: AMBULANCE_TEAM не получает задачи типа BLOCKADE."""
+        agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
+        blockade = make_blockade(entity_id=50)
+        result = make_dispatcher().filter_tasks(agent, [blockade])
+        assert result == []
+
+    def test_fire_brigade_filters_civilians(self) -> None:
+        """Я проверяю: FIRE_BRIGADE не получает задачи типа CIVILIAN."""
+        agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
+        civ = make_civilian(hp=10000, damage=50, buriedness=5, estimated_death_time=9999)
+        result = make_dispatcher().filter_tasks(agent, [civ])
+        assert result == []
+
+
+# ===========================================================================
+# Тесты граничных случаев fieryness для зданий
+# ===========================================================================
+
+
+class TestBuildingFierynessEdgeCases:
+    """Я проверяю граничные случаи fieryness: None и 0."""
+
+    def test_fieryness_none_filtered(self) -> None:
+        """Я проверяю: fieryness=None → данные устарели → здание отсеивается."""
+        agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
+        entity = make_building(fieryness=None)
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert result == []
+
+    def test_fieryness_zero_filtered(self) -> None:
+        """Я проверяю: fieryness=0 → здание не горит → отсеивается."""
+        agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
+        entity = make_building(fieryness=0)
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert result == []
+
+    def test_civilian_hp_none_filtered(self) -> None:
+        """Я проверяю: hp=None → устаревшие данные → гражданский отсеивается."""
+        agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
+        entity = make_civilian(hp=None, damage=50, buriedness=5)
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert result == []

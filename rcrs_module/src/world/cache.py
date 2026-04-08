@@ -7,7 +7,10 @@ from typing import Dict, Iterable, Optional
 
 import networkx as nx
 
-from .entities import AgentState, MapEdge, MapNode, PerceptionPacket, VisibleEntity
+from .entities import (
+    AgentState, MapEdge, MapNode, PerceptionPacket, VisibleEntity,
+    estimate_death_time, compute_total_area,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -106,6 +109,14 @@ class WorldModel:
         # Я обновляю союзников до обновления задач — f_social читает agents[].
         self.update_agents(packet.ally_states)
 
+        # Я удаляю сущности, которые ядро пометило как удалённые (ChangeSet.deletes).
+        # Это критически важно для завалов: после AKClear blockade-сущность удаляется ядром,
+        # и без этого полицейский будет повторно пытаться расчистить несуществующий завал.
+        for eid in packet.deleted_entity_ids:
+            if eid in self.tasks:
+                logger.info("Я удалил сущность entity_id=%d из кэша (ядро удалило из ChangeSet)", eid)
+                del self.tasks[eid]
+
         # Я сливаю наблюдаемые сущности с историческим кэшем.
         self.update_perception(packet.visible_entities)
 
@@ -133,7 +144,10 @@ class WorldModel:
                 logger.info("Я добавил новую сущность в кэш: entity_id=%s", entity.id)
                 continue
 
-            def _keep(new_val, old_val):
+            def _keep(
+                new_val: int | float | None,
+                old_val: int | float | None,
+            ) -> int | float | None:
                 """Я сохраняю старое значение, если новое равно None (сущность вышла из зоны видимости)."""
                 return new_val if new_val is not None else old_val
 
@@ -158,11 +172,21 @@ class WorldModel:
                 }
             )
 
+            # Я пересчитываю estimated_death_time и total_area из слитых данных,
+            # потому что entity.computed_metrics был вычислен из неслитого raw
+            # (где hp/damage могли быть None), а merged_raw содержит актуальные данные.
+            merged_metrics = entity.computed_metrics.model_copy(
+                update={
+                    "estimated_death_time": estimate_death_time(merged_raw),
+                    "total_area": compute_total_area(merged_raw),
+                }
+            )
+
             merged_entity = existing.model_copy(
                 update={
                     "type": entity.type,
                     "raw_sensor_data": merged_raw,
-                    "computed_metrics": entity.computed_metrics,
+                    "computed_metrics": merged_metrics,
                     "utility_score": entity.utility_score,
                 }
             )

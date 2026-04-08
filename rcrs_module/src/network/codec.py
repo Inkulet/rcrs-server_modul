@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import struct
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from network.proto.RCRSProto_pb2 import (
     ChangeSetProto,
@@ -32,6 +32,8 @@ from world.entities import (
     RawSensorData,
     Resources,
     VisibleEntity,
+    estimate_death_time,
+    compute_total_area,
 )
 
 
@@ -93,15 +95,12 @@ PROP_REPAIR_COST        = _PROP | 9    # 0x1209
 PROP_FLOORS             = _PROP | 10   # 0x120A
 PROP_FIERYNESS          = _PROP | 13   # 0x120D
 PROP_BUILDING_AREA_GROUND = _PROP | 16 # 0x1210
-# Я использую PROP_EDGES для построения дорожного графа.
-# StandardPropertyURN.EDGES = 0x1211 — EdgeListProperty у Area-сущностей (Road, Building и т.д.).
+# Я задаю URN свойства EdgeList: ordinal=19 → 0x1213.
+# В Java StandardPropertyURN: EDGES = PROPERTY_URN_PREFIX | 19.
+# Ранее ошибочно использовалось ordinal=17 (это BUILDING_AREA_TOTAL).
 # Каждое ребро содержит: startX, startY, endX, endY, neighbour (entity_id соседа).
-PROP_EDGES              = _PROP | 17   # 0x1211  EdgeListProperty (топология дорог, Area.edges)
+PROP_EDGES              = _PROP | 19   # 0x1213  EdgeListProperty — список рёбер дорожного графа
 PROP_POSITION           = _PROP | 20   # 0x1214
-# Я добавляю PROP_NEIGHBOURS — список ID соседних Area-сущностей (intList).
-# В ряде версий RCRS дорожный граф закодирован через соседей, а не EdgeList.
-# Значение 0x1213 соответствует StandardPropertyURN с ordinal=19 (_PROP | 19).
-PROP_NEIGHBOURS         = _PROP | 19   # 0x1213
 PROP_HP                 = _PROP | 24   # 0x1218
 PROP_DAMAGE             = _PROP | 25   # 0x1219
 PROP_BURIEDNESS         = _PROP | 26   # 0x121A
@@ -344,11 +343,9 @@ def parse_ka_connect_ok(
 
     # Я использую двухпроходной алгоритм для построения рёбер графа.
     # Проход 1: собираю координаты всех Area-узлов в словарь {entity_id: (x, y)}.
-    # Проход 2: строю рёбра — через PROP_EDGES (0x1211, EdgeListProperty с геометрией)
-    #           ИЛИ через PROP_NEIGHBOURS (0x1213, intList соседних entity_id).
-    # В тестовой карте RCRS (Kobe) топология закодирована через PROP_NEIGHBOURS,
-    # а не через PROP_EDGES: координаты рёбер не передаются, только ID соседей.
-    # В этом случае вес ребра = эвклидово расстояние между центрами сущностей.
+    # Проход 2: строю рёбра — через PROP_EDGES (0x1213, EdgeListProperty с геометрией).
+    # В RCRS-протоколе единственный URN для рёбер дорожного графа — PROP_EDGES (_PROP | 19).
+    # Каждое ребро содержит координаты и ID соседней Area-сущности.
 
     _AREA_URNS = frozenset((ENT_ROAD, ENT_BUILDING, ENT_REFUGE, ENT_FIRE_STATION,
                             ENT_AMBULANCE_CENTRE, ENT_POLICE_OFFICE, ENT_HYDRANT,
@@ -379,7 +376,7 @@ def parse_ka_connect_ok(
     _seen_edges: set[tuple[int, int]] = set()  # дедупликация (a,b) ↔ (b,a)
 
     for eid, urn, props in _entity_protos_area:
-        # Вариант A: EdgeListProperty (PROP_EDGES 0x1211) — ребро с координатами и соседом.
+        # Я обрабатываю PROP_EDGES (0x1213, EdgeListProperty) — ребро с координатами и соседом.
         if PROP_EDGES in props:
             for edge_proto in props[PROP_EDGES].edgeList.edges:
                 neighbour = edge_proto.neighbour
@@ -387,25 +384,21 @@ def parse_ka_connect_ok(
                     key = (min(eid, neighbour), max(eid, neighbour))
                     if key not in _seen_edges:
                         _seen_edges.add(key)
-                        dx = edge_proto.endX - edge_proto.startX
-                        dy = edge_proto.endY - edge_proto.startY
-                        weight = max(1.0, _math.hypot(dx, dy))
+                        # Я использую расстояние между центрами Area-сущностей,
+                        # а не длину грани (edge_proto.start/end). Длина грани —
+                        # это ширина прохода, а не расстояние перемещения.
+                        # Если координаты соседа известны — евклидово расстояние;
+                        # иначе — fallback на длину грани.
+                        if eid in node_coords and neighbour in node_coords:
+                            sx, sy = node_coords[eid]
+                            tx, ty = node_coords[neighbour]
+                            weight = max(1.0, _math.hypot(tx - sx, ty - sy))
+                        else:
+                            dx = edge_proto.endX - edge_proto.startX
+                            dy = edge_proto.endY - edge_proto.startY
+                            weight = max(1.0, _math.hypot(dx, dy))
                         map_edges.append(MapEdge(source_id=eid, target_id=neighbour, weight=weight))
 
-        # Вариант Б: EdgeListProperty (PROP_NEIGHBOURS 0x1213) — альтернативный URN рёбер
-        # в данной версии RCRS Kobe. Формат идентичен PROP_EDGES (0x1211), только
-        # property URN отличается. Я обрабатываю его как edgeList, а не intList.
-        elif PROP_NEIGHBOURS in props:
-            for edge_proto in props[PROP_NEIGHBOURS].edgeList.edges:
-                neighbour = edge_proto.neighbour
-                if neighbour > 0:
-                    key = (min(eid, neighbour), max(eid, neighbour))
-                    if key not in _seen_edges:
-                        _seen_edges.add(key)
-                        dx = edge_proto.endX - edge_proto.startX
-                        dy = edge_proto.endY - edge_proto.startY
-                        weight = max(1.0, _math.hypot(dx, dy))
-                        map_edges.append(MapEdge(source_id=eid, target_id=neighbour, weight=weight))
 
     logger.info(
         "Я разобрал KAConnectOK: agent_id=%d, узлов=%d, рёбер=%d, убежищ=%d",
@@ -478,6 +471,8 @@ def parse_ka_sense(proto: MessageProto, agent_id: int, agent_type: AgentType) ->
             if eurn == ENT_CIVILIAN and PROP_POSITION in props:
                 # Я читаю intValue: entity_id в PropertyProto хранится как int, не entityID.
                 civilian_pos_id = props[PROP_POSITION].intValue
+                # Я проверяю: гражданский загружен в этого агента, если его PROP_POSITION == agent_id.
+                # В RCRS при AKLoad позиция гражданского устанавливается равной ID медика.
                 if civilian_pos_id == agent_id:
                     own_transporting = True
                     logger.debug(
@@ -485,7 +480,7 @@ def parse_ka_sense(proto: MessageProto, agent_id: int, agent_type: AgentType) ->
                         eid, agent_id,
                     )
 
-            raw = _parse_raw_sensor_data(props)
+            raw = _parse_raw_sensor_data(props, entity_urn=eurn)
             x   = props[PROP_X].intValue if PROP_X in props else 0
             y   = props[PROP_Y].intValue if PROP_Y in props else 0
 
@@ -497,8 +492,8 @@ def parse_ka_sense(proto: MessageProto, agent_id: int, agent_type: AgentType) ->
                     # Я оставляю path_distance=0 — она будет заполнена
                     # алгоритмом A* в слое навигации (UC-6), вне этого слоя.
                     path_distance=0.0,
-                    estimated_death_time=_estimate_death_time(raw),
-                    total_area=_compute_total_area(raw),
+                    estimated_death_time=estimate_death_time(raw),
+                    total_area=compute_total_area(raw),
                 ),
                 utility_score=0.0,
             )
@@ -517,6 +512,12 @@ def parse_ka_sense(proto: MessageProto, agent_id: int, agent_type: AgentType) ->
         resources=Resources(water_quantity=own_water, is_transporting=own_transporting),
     )
 
+    # Я извлекаю список удалённых ядром сущностей из ChangeSet.deletes —
+    # расчищенные завалы, спасённые гражданские и т.д. должны быть удалены из кэша.
+    deleted_ids: list[int] = []
+    if COMP_UPDATES in proto.components:
+        deleted_ids = list(proto.components[COMP_UPDATES].changeSet.deletes)
+
     packet = PerceptionPacket(
         tick=tick,
         own_state=own_state,
@@ -524,6 +525,7 @@ def parse_ka_sense(proto: MessageProto, agent_id: int, agent_type: AgentType) ->
         ally_states=ally_states,
         map_nodes=[],
         map_edges=[],
+        deleted_entity_ids=deleted_ids,
     )
 
     logger.debug(
@@ -537,8 +539,12 @@ def parse_ka_sense(proto: MessageProto, agent_id: int, agent_type: AgentType) ->
 # Вспомогательные функции разбора свойств
 # ===========================================================================
 
-def _parse_raw_sensor_data(props: dict) -> RawSensorData:
-    """Я извлекаю сенсорные поля из словаря PropertyProto по соответствующим URN."""
+def _parse_raw_sensor_data(props: dict[int, Any], entity_urn: int = 0) -> RawSensorData:
+    """Я извлекаю сенсорные поля из словаря PropertyProto по соответствующим URN.
+
+    Параметр entity_urn определяет тип сущности: для гражданских и завалов
+    я заполняю position_on_edge, для остальных типов — оставляю None.
+    """
 
     def _int(urn: int) -> Optional[int]:
         """Я возвращаю int-значение свойства или None, если свойство не определено."""
@@ -568,32 +574,9 @@ def _parse_raw_sensor_data(props: dict) -> RawSensorData:
         floors=_int(PROP_FLOORS),
         ground_area=_int(PROP_BUILDING_AREA_GROUND),
         repair_cost=_int(PROP_REPAIR_COST),
-        position_on_edge=_int(PROP_POSITION),
+        position_on_edge=_int(PROP_POSITION) if entity_urn in (ENT_CIVILIAN, ENT_BLOCKADE) else None,
     )
 
-
-def _estimate_death_time(raw: RawSensorData) -> int:
-    """Я оцениваю TTL из HP/damage, чтобы заполнить ComputedMetrics.estimated_death_time.
-
-    Если данных недостаточно — я возвращаю большое число (задача не имеет дедлайна).
-    """
-    hp     = raw.hp
-    damage = raw.damage
-    if hp is None or damage is None or damage <= 0:
-        return 99999
-    try:
-        return int(hp / damage)
-    except ZeroDivisionError:
-        return 99999
-
-
-def _compute_total_area(raw: RawSensorData) -> int:
-    """Я вычисляю TotalArea = GroundArea * Floors для здания."""
-    ga = raw.ground_area
-    fl = raw.floors
-    if ga is None or fl is None:
-        return 0
-    return ga * fl
 
 
 __all__ = [
@@ -607,7 +590,7 @@ __all__ = [
     "PROP_X", "PROP_Y", "PROP_HP", "PROP_DAMAGE", "PROP_BURIEDNESS",
     "PROP_TEMPERATURE", "PROP_FIERYNESS", "PROP_FLOORS",
     "PROP_BUILDING_AREA_GROUND", "PROP_REPAIR_COST", "PROP_WATER_QUANTITY",
-    "PROP_EDGES", "PROP_BLOCKADES", "PROP_NEIGHBOURS",
+    "PROP_EDGES", "PROP_BLOCKADES",
     "MSG_AK_MOVE", "MSG_AK_RESCUE", "MSG_AK_EXTINGUISH",
     "MSG_AK_CLEAR", "MSG_AK_LOAD", "MSG_AK_UNLOAD", "MSG_AK_REST",
     # Фреймирование

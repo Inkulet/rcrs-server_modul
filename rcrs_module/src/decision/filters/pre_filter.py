@@ -32,6 +32,20 @@ class PreFilterDispatcher:
         self.work_rate = work_rate
         self.average_speed = average_speed
 
+    def _allowed_entity_type(self, agent_type: AgentType) -> EntityType:
+        """Здесь я возвращаю тип сущностей, релевантный для данного типа агента.
+
+        Я использую сопоставление типов, чтобы FIRE_BRIGADE работал только со зданиями,
+        AMBULANCE_TEAM — только с гражданскими, POLICE_FORCE — только с завалами.
+        Это предотвращает передачу нерелевантных задач в расчёт полезности.
+        """
+        if agent_type == AgentType.FIRE_BRIGADE:
+            return EntityType.BUILDING
+        if agent_type == AgentType.AMBULANCE_TEAM:
+            return EntityType.CIVILIAN
+        # Я возвращаю BLOCKADE для полиции — это единственный оставшийся тип агента.
+        return EntityType.BLOCKADE
+
     def filter_tasks(self, agent_state: AgentState, tasks: Iterable[VisibleEntity]) -> List[VisibleEntity]:
         """В этом методе я применяю правила UC-2 и возвращаю релевантные задачи.
 
@@ -55,6 +69,19 @@ class PreFilterDispatcher:
                     agent_state.id,
                 )
                 raise NeedRefugeException("Я обнаружил, что у пожарного нет воды")
+
+            # Я фильтрую сущности по допустимому типу для данного агента —
+            # это исключает нерелевантные задачи до основного цикла и снижает M.
+            allowed_type = self._allowed_entity_type(agent_state.type)
+            tasks_list = list(tasks)
+            tasks = [e for e in tasks_list if e.type == allowed_type]
+            logger.debug(
+                "Я отфильтровал сущности по типу %s: было=%d, осталось=%d, agent_id=%s",
+                allowed_type.value,
+                len(tasks_list),
+                len(tasks),
+                agent_state.id,
+            )
 
             filtered: List[VisibleEntity] = []
             for entity in tasks:
@@ -96,9 +123,13 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            if fieryness in {4, 5, 6, 7, 8}:
+            # Я допускаю только активно горящие здания (fieryness ∈ {1, 2, 3}).
+            # fieryness=0 (не горит) — тушить нечего;
+            # fieryness ∈ {4..8} — здание уже сгорело или потушено.
+            # fieryness=None — данные устарели, здание вышло из видимости.
+            if fieryness is None or fieryness not in {1, 2, 3}:
                 logger.debug(
-                    "Я исключаю сгоревшее здание по fieryness=%s: entity_id=%s",
+                    "Я исключаю негорящее/сгоревшее здание по fieryness=%s: entity_id=%s",
                     fieryness,
                     entity.id,
                 )

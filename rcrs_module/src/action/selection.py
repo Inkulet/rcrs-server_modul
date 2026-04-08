@@ -3,7 +3,6 @@ from __future__ import annotations
 """В этом модуле я реализую выбор целевой задачи с гистерезисом."""
 
 import logging
-from typing import Dict, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -19,16 +18,16 @@ class TargetSelector:
 
     def select_best_target(
         self,
-        current_target_id: Optional[int],
-        utilities_dict: Dict[int, float],
-    ) -> Optional[int]:
+        current_target_id: int | None,
+        utilities_dict: dict[int, float],
+    ) -> int | None:
         """Здесь я выбираю цель по максимуму полезности с учетом гистерезиса."""
 
         if not utilities_dict:
             logger.info("Я не получил доступных задач и возвращаю режим ожидания")
             return None
 
-        best_target_id = max(utilities_dict, key=utilities_dict.get)
+        best_target_id = max(utilities_dict, key=lambda k: utilities_dict[k])
         best_utility = utilities_dict[best_target_id]
 
         if current_target_id is None or current_target_id not in utilities_dict:

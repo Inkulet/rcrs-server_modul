@@ -79,11 +79,17 @@ def urgency_for_fire(entity: VisibleEntity, t_max: float = T_MAX) -> float:
         return 0.0
 
 
-def urgency_for_police(min_distance_to_targets: float, epsilon: float = EPSILON) -> float:
-    """Здесь я рассчитываю срочность для полиции по расстоянию до целей."""
+def urgency_for_police(task_distance: float, epsilon: float = EPSILON) -> float:
+    """Здесь я рассчитываю срочность для полиции по расстоянию до конкретной задачи.
+
+    Я принимаю расстояние до конкретного завала (task_distance), а не глобальный
+    минимум по всем задачам. Это позволяет каждой задаче получать свою нормировку:
+    ближние завалы получают более высокую срочность, дальние — более низкую.
+    Формула: urgency = clamp(1 / (task_distance + epsilon)) → результат в [0, 1].
+    """
 
     try:
-        return _clamp_to_unit(1.0 / (min_distance_to_targets + epsilon))
+        return _clamp_to_unit(1.0 / (task_distance + epsilon))
     except ZeroDivisionError:
         logger.warning("Я поймал деление на ноль при расчете срочности для полиции")
         return 0.0
@@ -94,7 +100,7 @@ def compute_urgency(
     entity: Optional[VisibleEntity] = None,
     t_travel: Optional[float] = None,
     t_work: Optional[float] = None,
-    min_distance_to_targets: Optional[float] = None,
+    task_distance: Optional[float] = None,
     t_max: float = T_MAX,
     epsilon: float = EPSILON,
     stable_value: float = STABLE_URGENCY,
@@ -115,10 +121,10 @@ def compute_urgency(
             return urgency_for_fire(entity, t_max)
 
         if agent_state.type == AgentType.POLICE_FORCE:
-            if min_distance_to_targets is None:
+            if task_distance is None:
                 logger.warning("Я не получил расстояние для срочности полиции: agent_id=%s", agent_state.id)
                 return 0.0
-            return urgency_for_police(min_distance_to_targets, epsilon)
+            return urgency_for_police(task_distance, epsilon)
 
         return 0.0
     except ZeroDivisionError:

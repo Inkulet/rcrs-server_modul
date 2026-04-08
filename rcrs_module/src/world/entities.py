@@ -138,6 +138,33 @@ class PerceptionPacket(BaseEntityModel):
     map_nodes: List[MapNode] = Field(default_factory=list)
     map_edges: List[MapEdge] = Field(default_factory=list)
     refuge_ids: List[StrictInt] = Field(default_factory=list)
+    # Я передаю список удалённых ядром сущностей (ChangeSet.deletes), чтобы
+    # WorldModel мог очистить кэш — например, расчищенный завал должен исчезнуть.
+    deleted_entity_ids: List[StrictInt] = Field(default_factory=list)
+
+
+def estimate_death_time(raw: RawSensorData) -> int:
+    """Я оцениваю TTL из HP/damage для заполнения ComputedMetrics.estimated_death_time.
+
+    Если данных недостаточно — я возвращаю большое число (задача без дедлайна).
+    """
+    hp = raw.hp
+    damage = raw.damage
+    if hp is None or damage is None or damage <= 0:
+        return 99999
+    try:
+        return int(hp / damage)
+    except ZeroDivisionError:
+        return 99999
+
+
+def compute_total_area(raw: RawSensorData) -> int:
+    """Я вычисляю TotalArea = GroundArea × Floors для здания."""
+    ga = raw.ground_area
+    fl = raw.floors
+    if ga is None or fl is None:
+        return 0
+    return ga * fl
 
 
 def parse_agent_state(data: object) -> Optional[AgentState]:
@@ -167,4 +194,6 @@ __all__ = [
     "StrictInt",
     "parse_agent_state",
     "parse_visible_entity",
+    "estimate_death_time",
+    "compute_total_area",
 ]

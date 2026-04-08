@@ -9,25 +9,21 @@ from __future__ import annotations
 """
 
 import logging
-from typing import List, Optional
 
 import networkx as nx
 
+from decision.utility.distance import MAX_MAP_DISTANCE
 from world.entities import MapNode, VisibleEntity
 
 
 logger = logging.getLogger(__name__)
-
-# Я задаю предельное расстояние для случаев, когда путь не найден.
-# Значение должно быть больше любого реального расстояния на карте RCRS.
-MAX_MAP_DISTANCE: float = 100_000_000.0
 
 
 def compute_path(
     graph: nx.Graph,
     from_id: int,
     to_id: int,
-) -> List[int]:
+) -> list[int]:
     """Здесь я вычисляю кратчайший путь в графе между двумя узлами.
 
     Я использую встроенный алгоритм A* NetworkX с весом «weight» на рёбрах.
@@ -38,7 +34,7 @@ def compute_path(
         return [from_id]
 
     try:
-        path: List[int] = nx.astar_path(graph, from_id, to_id, weight="weight")
+        path: list[int] = nx.astar_path(graph, from_id, to_id, weight="weight")
         logger.debug("Я нашёл путь от %d до %d: %d шагов", from_id, to_id, len(path))
         return path
     except nx.NetworkXNoPath:
@@ -81,8 +77,8 @@ def compute_path_distance(
 def fill_path_distances(
     graph: nx.Graph,
     agent_node_id: int,
-    entities: List[VisibleEntity],
-) -> List[VisibleEntity]:
+    entities: list[VisibleEntity],
+) -> list[VisibleEntity]:
     """Здесь я обновляю path_distance у каждой сущности перед расчётом полезности.
 
     Я запускаю ОДИН вызов Dijkstra из позиции агента, получая словарь
@@ -105,7 +101,7 @@ def fill_path_distances(
         )
         dist_map = {}
 
-    updated: List[VisibleEntity] = []
+    updated: list[VisibleEntity] = []
     for entity in entities:
         # Я определяю навигационный узел: для сущностей не в графе
         # (гражданские, завалы) использую position_on_edge — дорогу/здание, где они находятся.
@@ -133,8 +129,8 @@ def fill_path_distances(
 def nearest_refuge_path(
     graph: nx.Graph,
     from_id: int,
-    refuge_ids: List[int],
-) -> List[int]:
+    refuge_ids: list[int],
+) -> list[int]:
     """Здесь я нахожу ближайшее убежище и возвращаю путь к нему.
 
     Я вычисляю путь для каждого убежища ровно один раз и определяю длину
@@ -146,7 +142,7 @@ def nearest_refuge_path(
         logger.warning("Я не знаю ни одного убежища — невозможно построить маршрут")
         return []
 
-    best_path: List[int] = []
+    best_path: list[int] = []
     best_distance: float = MAX_MAP_DISTANCE
 
     for refuge_id in refuge_ids:
@@ -174,7 +170,6 @@ def nearest_refuge_path(
 
 
 __all__ = [
-    "MAX_MAP_DISTANCE",
     "compute_path",
     "compute_path_distance",
     "fill_path_distances",

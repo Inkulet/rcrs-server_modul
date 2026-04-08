@@ -146,18 +146,18 @@ class TestUrgencyPolice:
     def test_nonzero_distance_returns_inverse(self) -> None:
         """Я проверяю: при d > 0 результат = 1/(d+ε), зажатый к [0,1]."""
         d = 10.0
-        result = urgency_for_police(min_distance_to_targets=d, epsilon=EPSILON)
+        result = urgency_for_police(task_distance=d, epsilon=EPSILON)
         expected = min(1.0, 1.0 / (d + EPSILON))
         assert abs(result - expected) < 1e-9
 
     def test_zero_distance_clamped_to_one(self) -> None:
         """Я проверяю: расстояние 0 → 1/ε >> 1 → зажимается к 1.0."""
-        result = urgency_for_police(min_distance_to_targets=0.0)
+        result = urgency_for_police(task_distance=0.0)
         assert result == 1.0
 
     def test_large_distance_approaches_zero(self) -> None:
         """Я проверяю: очень большое расстояние → f_urgency близко к 0."""
-        result = urgency_for_police(min_distance_to_targets=1e9)
+        result = urgency_for_police(task_distance=1e9)
         assert result < 1e-6
 
     def test_result_in_unit_interval(self) -> None:
@@ -192,7 +192,7 @@ class TestComputeUrgencyDispatch:
     def test_police_dispatched_correctly(self) -> None:
         """Я проверяю: POLICE_FORCE → вызывает urgency_for_police."""
         agent = make_agent(agent_type=AgentType.POLICE_FORCE)
-        result = compute_urgency(agent, min_distance_to_targets=50.0)
+        result = compute_urgency(agent, task_distance=50.0)
         assert result == urgency_for_police(50.0)
 
     def test_ambulance_missing_entity_returns_zero(self) -> None:

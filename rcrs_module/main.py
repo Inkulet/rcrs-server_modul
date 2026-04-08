@@ -55,6 +55,11 @@ AVERAGE_SPEED: float = 70_000.0
 # Я задаю радиус для социального фактора f_social в единицах карты (мм).
 SOCIAL_RADIUS: float = 30_000.0
 
+# Я задаю максимальный объём воды для команды AKExtinguish.
+# Значение 10 000 соответствует вместимости стандартного пожарного агента в RCRS.
+# Ядро само ограничит фактически отправляемое количество воды текущим запасом агента.
+MAX_WATER_DISCHARGE: int = 10_000
+
 # --- Глобальный флаг остановки (используется обработчиком SIGTERM) ---
 _shutdown_requested: bool = False
 
@@ -119,8 +124,17 @@ def _dispatch_action(
         return
 
     # Я считаю агента «у цели», если его текущий узел совпадает с навигационным узлом.
-    # Это единственный корректный критерий: len(path)==1 эквивалентен from_id==to_id.
-    at_target = (agent_node_id == nav_node_id)
+    # Для пожарных я также считаю «у цели», если nav_node — сосед текущего узла,
+    # потому что в RCRS AKExtinguish работает на расстоянии fire.extinguish.max-distance
+    # и пожарный может тушить здание с прилегающей дороги, не входя внутрь.
+    if agent_type == AgentType.FIRE_BRIGADE:
+        at_target = (
+            agent_node_id == nav_node_id
+            or world_model.road_graph.has_node(nav_node_id)
+            and nav_node_id in world_model.road_graph.neighbors(agent_node_id)
+        )
+    else:
+        at_target = (agent_node_id == nav_node_id)
 
     if at_target:
         # Я выполняю действие по типу агента, передавая оригинальный target_id (не nav_node).
@@ -136,10 +150,13 @@ def _dispatch_action(
             else:
                 # Гражданский раскопан (buriedness=0) или данные устарели — гружу.
                 client.send_load(tick, target_id)
+                # Я удаляю загруженного гражданского из кэша задач, чтобы ни этот,
+                # ни другие агенты не выбрали его повторно как цель.
+                world_model.tasks.pop(target_id, None)
                 logger.info("Я отправил AKLoad: target_id=%d, tick=%d", target_id, tick)
         elif agent_type == AgentType.FIRE_BRIGADE:
             # Я задаю полный объём воды — ядро само ограничит его доступным количеством.
-            client.send_extinguish(tick, target_id, water=10_000)
+            client.send_extinguish(tick, target_id, water=MAX_WATER_DISCHARGE)
             logger.info("Я отправил AKExtinguish: target_id=%d, tick=%d", target_id, tick)
         elif agent_type == AgentType.POLICE_FORCE:
             client.send_clear(tick, target_id)
@@ -209,7 +226,14 @@ def main() -> None:
             # --- Шаг 1: Восприятие (Perception) ---
             try:
                 packet = client.receive_sense()
-            except (ConnectionRefusedError, TimeoutError, OSError) as exc:
+            except TimeoutError:
+                # Я получил таймаут от сокета — ядро задерживает KASense.
+                # Если запрошена остановка — завершаю, иначе продолжаю ожидание.
+                if _shutdown_requested:
+                    break
+                logger.warning("Я не получил KASense в срок, продолжаю ожидание (такт)")
+                continue
+            except (ConnectionRefusedError, OSError) as exc:
                 logger.error("Я потерял соединение при получении данных: %s", exc)
                 break
 
@@ -267,20 +291,23 @@ def main() -> None:
             # --- Шаг 5: Расчёт полезности (Utility Calculation, UC-3/UC-4) ---
             utilities: dict[int, float] = {}
             if filtered_tasks:
-                # Я вычисляю min_distance_to_targets для полиции: минимальная дистанция
-                # до любого завала в filtered_tasks. urgency_for_police использует это
-                # значение для нормировки — без него f_urgency для полиции всегда 0.0.
-                min_distance_to_targets: float | None = None
-                if agent_state.type.value == "POLICE_FORCE":
-                    distances = [e.computed_metrics.path_distance for e in filtered_tasks]
-                    min_distance_to_targets = min(distances) if distances else None
+                # Я передаю расстояние до конкретной задачи в urgency_for_police через
+                # параметр task_distance — каждая задача получает свою нормировку.
 
                 for entity in filtered_tasks:
                     # Я вычисляю t_travel и t_work по формулам диплома:
                     # t_travel = d_ij / v_avg [такты]; t_work = Buriedness / Rate [такты].
-                    t_travel = entity.computed_metrics.path_distance / AVERAGE_SPEED
+                    try:
+                        t_travel = entity.computed_metrics.path_distance / AVERAGE_SPEED
+                    except ZeroDivisionError:
+                        logger.warning("Я поймал деление на ноль при вычислении t_travel для entity_id=%s", entity.id)
+                        t_travel = 0.0
                     buriedness = entity.raw_sensor_data.buriedness
-                    t_work = 0.0 if buriedness is None else buriedness / dispatcher.work_rate
+                    try:
+                        t_work = 0.0 if buriedness is None else buriedness / dispatcher.work_rate
+                    except ZeroDivisionError:
+                        logger.warning("Я поймал деление на ноль при вычислении t_work для entity_id=%s", entity.id)
+                        t_work = 0.0
 
                     # Я определяю позицию цели на карте для евклидовых вычислений (f_social).
                     # Для CIVILIAN entity.id — это ID гражданского, которого нет в графе дорог.
@@ -303,7 +330,7 @@ def main() -> None:
                         target_position=target_position,
                         t_travel=t_travel,
                         t_work=t_work,
-                        min_distance_to_targets=min_distance_to_targets,
+                        task_distance=entity.computed_metrics.path_distance,
                         social_radius=SOCIAL_RADIUS,
                     )
                     utilities[entity.id] = utility

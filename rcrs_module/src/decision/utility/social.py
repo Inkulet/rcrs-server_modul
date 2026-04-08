@@ -15,7 +15,8 @@ from world.entities import AgentType, Position
 logger = logging.getLogger(__name__)
 
 # Я задаю радиус по умолчанию в единицах карты RCRS (мм).
-DEFAULT_RADIUS: float = 2000.0
+# Значение 30_000.0 соответствует SOCIAL_RADIUS, используемому в main.py.
+DEFAULT_RADIUS: float = 30_000.0
 
 
 def _euclidean_distance(pos_a: Position, pos_b: Position) -> float:

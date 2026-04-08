@@ -48,7 +48,7 @@ class UtilityAggregator:
         target_position: Position,
         t_travel: Optional[float] = None,
         t_work: Optional[float] = None,
-        min_distance_to_targets: Optional[float] = None,
+        task_distance: Optional[float] = None,
         social_radius: float = DEFAULT_RADIUS,
         max_map_distance: float = MAX_MAP_DISTANCE,
     ) -> float:
@@ -65,7 +65,7 @@ class UtilityAggregator:
                 entity=entity,
                 t_travel=t_travel,
                 t_work=t_work,
-                min_distance_to_targets=min_distance_to_targets,
+                task_distance=task_distance,
             )
             f_effort = compute_effort(agent_state, entity=entity)
             # Я использую уже вычисленную дистанцию из fill_path_distances() (UC-6),

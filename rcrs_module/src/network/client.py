@@ -58,8 +58,6 @@ _AGENT_TYPE_TO_ENTITY_URN: dict[AgentType, int] = {
     AgentType.POLICE_FORCE:   ENT_POLICE_FORCE,
 }
 
-# Максимальное число попыток переподключения при потере связи.
-_MAX_RECONNECT_ATTEMPTS: int = 3
 
 
 class RCRSClient:
@@ -155,7 +153,9 @@ class RCRSClient:
         # Шаг 2: получаю ответ ядра
         proto = self._recv_proto()
         if proto.urn == URN_KA_CONNECT_ERROR:
-            reason = proto.components.get(0x020A)
+            # Я извлекаю строковую причину из компонента COMP_REASON (0x020A).
+            reason_comp = proto.components.get(0x020A)
+            reason = reason_comp.stringValue if reason_comp is not None else "unknown"
             logger.error("Я получил KAConnectError от ядра: %s", reason)
             raise ConnectionError(f"Ядро отказало в соединении: {reason}")
 
@@ -176,12 +176,13 @@ class RCRSClient:
         ack_frame = build_ak_acknowledge(req_id, agent_id)
         self._send_raw(ack_frame)
 
-        # Я переключаю сокет в блокирующий режим после рукопожатия.
+        # Я устанавливаю длинный таймаут вместо блокирующего режима после рукопожатия.
         # До рукопожатия короткий таймаут нужен для детектирования «ядро не запущено».
         # После рукопожатия ядро может отправить первый KASense через 30+ секунд
-        # (ожидание всех агентов), поэтому блокирующий режим обязателен.
+        # (ожидание всех агентов), поэтому таймаут должен быть большим.
+        # Я использую 120 с вместо None, чтобы SIGTERM мог прервать recv() через TimeoutError.
         if self._socket is not None:
-            self._socket.settimeout(None)
+            self._socket.settimeout(120.0)
 
         logger.info(
             "Я завершил рукопожатие: agent_id=%d, карта=%d узлов, %d рёбер",
