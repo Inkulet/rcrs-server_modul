@@ -100,6 +100,11 @@ class VisibleEntity(BaseEntityModel):
     raw_sensor_data: RawSensorData
     computed_metrics: ComputedMetrics
     utility_score: StrictFloat
+    # Я храню координаты сущности на карте (мм) для евклидовых проверок расстояния.
+    # Для завалов и гражданских это позволяет вычислить реальное расстояние до цели,
+    # а не использовать координаты центра дороги из графа.
+    entity_x: Optional[StrictInt] = Field(default=None)
+    entity_y: Optional[StrictInt] = Field(default=None)
 
 
 class MapNode(BaseEntityModel):

@@ -232,8 +232,13 @@ def build_ak_move(
     id_list.values.extend(path)
     msg.components[COMP_PATH].entityIDList.CopyFrom(id_list)
 
-    msg.components[COMP_DEST_X].intValue = dest_x
-    msg.components[COMP_DEST_Y].intValue = dest_y
+    # Я добавляю координаты только если они явно переданы — иначе Protobuf
+    # автоматически создаёт компоненты со значением -1, и ядро пытается
+    # вычислить вектор движения к точке (-1, -1) за границей карты,
+    # обнуляя скорость агента.
+    if dest_x != -1 and dest_y != -1:
+        msg.components[COMP_DEST_X].intValue = dest_x
+        msg.components[COMP_DEST_Y].intValue = dest_y
 
     logger.debug("Я собрал AKMove: agent=%d, time=%d, path=%s", agent_id, time, path)
     return pack_frame(msg.SerializeToString())
@@ -500,8 +505,10 @@ def parse_ka_sense(
             # Я определяю, перевозит ли наш агент гражданского: если гражданский
             # находится на позиции нашего агента (его PROP_POSITION = agent_id),
             # значит медик везёт этого гражданского в убежище.
-            if eurn == ENT_CIVILIAN and PROP_POSITION in props:
-                # Я читаю intValue: entity_id в PropertyProto хранится как int, не entityID.
+            if eurn == ENT_CIVILIAN and PROP_POSITION in props and props[PROP_POSITION].defined:
+                # Я читаю intValue только при defined=True: дельта-обновление с
+                # defined=False означает «значение не изменилось», а intValue будет 0
+                # (protobuf-дефолт), что исказит проверку транспортировки.
                 civilian_pos_id = props[PROP_POSITION].intValue
                 # Я проверяю: гражданский загружен в этого агента, если его PROP_POSITION == agent_id.
                 # В RCRS при AKLoad позиция гражданского устанавливается равной ID медика.
@@ -513,8 +520,14 @@ def parse_ka_sense(
                     )
 
             raw = _parse_raw_sensor_data(props, entity_urn=eurn)
-            x   = props[PROP_X].intValue if PROP_X in props else 0
-            y   = props[PROP_Y].intValue if PROP_Y in props else 0
+            # Я читаю координаты сущности с проверкой defined-флага, чтобы
+            # дельта-обновление без изменения координат не перезаписало их нулём.
+            entity_x: int | None = None
+            entity_y: int | None = None
+            if PROP_X in props and props[PROP_X].defined:
+                entity_x = props[PROP_X].intValue
+            if PROP_Y in props and props[PROP_Y].defined:
+                entity_y = props[PROP_Y].intValue
 
             entity = VisibleEntity(
                 id=eid,
@@ -528,6 +541,8 @@ def parse_ka_sense(
                     total_area=compute_total_area(raw),
                 ),
                 utility_score=0.0,
+                entity_x=entity_x,
+                entity_y=entity_y,
             )
             visible_entities.append(entity)
 

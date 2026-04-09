@@ -151,7 +151,7 @@ class PreFilterDispatcher:
             time_to_action = t_travel + (
                 entity.raw_sensor_data.buriedness / self.work_rate
             )
-            if entity.computed_metrics.estimated_death_time <= time_to_action:
+            if entity.computed_metrics.estimated_death_time < time_to_action:
                 logger.debug(
                     "Я исключаю задачу из-за дедлайна: entity_id=%s, "
                     "estimated_death=%d, time_to_action=%.1f",

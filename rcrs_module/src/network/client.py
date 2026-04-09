@@ -289,6 +289,11 @@ class RCRSClient:
     def send_unload(self, time: int) -> None:
         """Я отправляю AKUnload — команду выгрузки гражданского."""
         self._send_command(build_ak_unload(self._agent_id, time))
+        # Я принудительно сбрасываю флаг транспортировки, чтобы на следующем
+        # такте агент не застрял в убежище в бесконечном цикле выгрузки пустоты:
+        # parse_ka_sense использует prev_transporting, и без сброса флаг
+        # останется True навсегда после первой погрузки.
+        self._prev_transporting = False
         logger.info("Я отправил AKUnload: time=%d", time)
 
     def send_rest(self, time: int) -> None:

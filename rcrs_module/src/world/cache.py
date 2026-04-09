@@ -192,6 +192,10 @@ class WorldModel:
                     "raw_sensor_data": merged_raw,
                     "computed_metrics": merged_metrics,
                     "utility_score": entity.utility_score,
+                    # Я сохраняю последние известные координаты сущности:
+                    # свежие данные (entity.entity_x) приоритетнее кэша.
+                    "entity_x": entity.entity_x if entity.entity_x is not None else existing.entity_x,
+                    "entity_y": entity.entity_y if entity.entity_y is not None else existing.entity_y,
                 }
             )
 
