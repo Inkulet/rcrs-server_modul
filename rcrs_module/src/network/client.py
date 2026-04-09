@@ -378,23 +378,6 @@ class RCRSClient:
             # сохранены и будут дочитаны при следующем вызове.
             raise
 
-    def _recv_exactly(self, n: int) -> bytes:
-        """Я читаю ровно n байт из сокета, блокируясь до получения всех данных.
-
-        Это необходимо, потому что TCP может доставлять данные частями.
-        """
-        buf = bytearray()
-        remaining = n
-        while remaining > 0:
-            chunk = self._socket.recv(remaining)
-            if not chunk:
-                raise ConnectionError(
-                    f"Соединение закрыто ядром: прочитано {len(buf)} из {n} байт"
-                )
-            buf.extend(chunk)
-            remaining -= len(chunk)
-        return bytes(buf)
-
     # ===========================================================================
     # Mock-режим
     # ===========================================================================

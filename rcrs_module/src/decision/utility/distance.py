@@ -45,7 +45,14 @@ def distance_factor(
     target_position: Position,
     max_map_distance: float = MAX_MAP_DISTANCE,
 ) -> float:
-    """Здесь я вычисляю f_dist как отношение длины пути к максимальной дистанции карты."""
+    """Здесь я вычисляю f_dist запуская Дейкстра на каждый вызов — только для тестов.
+
+    ВНИМАНИЕ: эта функция запускает полный Dijkstra за O(N log N) на каждый вызов.
+    В производственном цикле по M задачам получается O(M · N log N) — недопустимо.
+    В aggregator.py я использую distance_factor_precomputed(), которая работает
+    за O(1) по предвычисленным данным fill_path_distances(). Эта функция предназначена
+    исключительно для unit-тестов и разовых расчётов вне главного цикла.
+    """
 
     if max_map_distance <= 0:
         logger.warning("Я получил неположительную MaxMapDistance, поэтому возвращаю штраф 1.0")
@@ -96,4 +103,7 @@ def distance_factor_precomputed(
         return 1.0
 
 
-__all__ = ["MAX_MAP_DISTANCE", "distance_factor", "distance_factor_precomputed"]
+# distance_factor намеренно исключён из __all__: он запускает Dijkstra за O(N log N)
+# на каждый вызов и не должен использоваться в производственном цикле полезности.
+# Используйте distance_factor_precomputed() в aggregator.py.
+__all__ = ["MAX_MAP_DISTANCE", "distance_factor_precomputed"]
