@@ -1,19 +1,39 @@
+# --- Каталоги, не входящие в репозиторий ---
 rcrs-server/
-
 rules/
+.claude/
 
+# --- macOS ---
 .DS_Store
+**/.DS_Store
+._*
 
+# --- Python: кэш и скомпилированные файлы ---
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
+*.pyo
 
+# --- Python: виртуальные окружения ---
 venv/
 env/
 .venv/
+.env/
 
+# --- Логи и базы данных ---
 *.log
 *.sqlite3
+logs/
 
+# --- IDE и редакторы ---
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# --- Тестовое покрытие ---
+.coverage
+htmlcov/
+.pytest_cache/
+**/.pytest_cache/
