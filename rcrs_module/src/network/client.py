@@ -87,6 +87,12 @@ class RCRSClient:
         # если таймаут прервал чтение на середине фрейма, уже прочитанные байты
         # сохраняются и будут использованы при следующем вызове _recv_proto.
         self._recv_buf: bytearray = bytearray()
+        # Я сохраняю состояние агента между тактами для корректной обработки
+        # дельта-обновлений: если ChangeSet не содержит PROP_POSITION или данных
+        # о перевозке, предыдущие значения сохраняются вместо сброса в 0/False.
+        self._prev_position: Optional[Position]  = None
+        self._prev_water: int       = 0
+        self._prev_transporting: bool = False
         # Я использую счётчик тактов только в mock-режиме.
         self._mock_tick: int = 0
 
@@ -216,14 +222,34 @@ class RCRSClient:
             )
             raise ConnectionError(f"Неожиданный URN вместо KASense: 0x{proto.urn:04X}")
 
-        packet = parse_ka_sense(proto, self._agent_id, self._agent_type)
+        packet = parse_ka_sense(
+            proto,
+            self._agent_id,
+            self._agent_type,
+            prev_position=self._prev_position,
+            prev_water=self._prev_water,
+            prev_transporting=self._prev_transporting,
+        )
+
+        # Я сохраняю состояние агента для следующего такта — дельта-обновления
+        # ядра RCRS могут не содержать неизменённые свойства.
+        self._prev_position     = packet.own_state.position
+        self._prev_water        = packet.own_state.resources.water_quantity
+        self._prev_transporting = packet.own_state.resources.is_transporting
 
         # Я прикрепляю данные карты и убежищ только к первому такту (приходят в KAConnectOK).
-        if hasattr(self, "_initial_map_nodes") and self._initial_map_nodes:
+        # Я проверяю наличие ЛЮБЫХ инициализационных данных (узлы, рёбра или убежища),
+        # а не только узлов — в редком кейсе «убежища есть, а узлов нет» данные
+        # убежищ не должны теряться.
+        _has_initial = (
+            hasattr(self, "_initial_map_nodes")
+            and (self._initial_map_nodes or self._initial_map_edges or self._initial_refuge_ids)
+        )
+        if _has_initial:
             packet = packet.model_copy(update={
                 "map_nodes":   self._initial_map_nodes,
                 "map_edges":   self._initial_map_edges,
-                "refuge_ids":  getattr(self, "_initial_refuge_ids", []),
+                "refuge_ids":  self._initial_refuge_ids,
             })
             self._initial_map_nodes  = []
             self._initial_map_edges  = []

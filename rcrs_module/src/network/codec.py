@@ -410,19 +410,47 @@ def parse_ka_connect_ok(
     return request_id, agent_id, map_nodes, map_edges, refuge_ids
 
 
-def parse_ka_sense(proto: MessageProto, agent_id: int, agent_type: AgentType) -> PerceptionPacket:
+def _defined_int_val(props: dict[int, Any], urn: int, default: int) -> int:
+    """Я безопасно извлекаю intValue из свойства, проверяя наличие и флаг defined.
+
+    В RCRS дельта-обновления (ChangeSet) могут содержать свойство с defined=False,
+    что означает «значение не изменилось» — в этом случае я возвращаю default,
+    чтобы не перезаписать актуальные данные нулём или мусором.
+    """
+    if urn not in props:
+        return default
+    p = props[urn]
+    if not p.defined:
+        return default
+    return p.intValue
+
+
+def parse_ka_sense(
+    proto: MessageProto,
+    agent_id: int,
+    agent_type: AgentType,
+    prev_position: Position | None = None,
+    prev_water: int = 0,
+    prev_transporting: bool = False,
+) -> PerceptionPacket:
     """Я разбираю KASense и собираю PerceptionPacket для текущего такта.
 
     Я итерирую ChangeSet: каждая EntityChangeProto → либо обновление состояния
     союзника (FIRE_BRIGADE / AMBULANCE_TEAM / POLICE_FORCE), либо наблюдаемая
     задача (BUILDING / CIVILIAN / BLOCKADE).
+
+    Параметры prev_position, prev_water, prev_transporting — состояние агента
+    с предыдущего такта. RCRS использует дельта-обновления: если свойство не
+    изменилось, оно не попадает в ChangeSet. Без сохранения предыдущего состояния
+    агент «забывает» позицию (сброс в entity_id=0) и флаг перевозки между тактами.
     """
     tick = _get_int(proto.components[COMP_TIME]) if COMP_TIME in proto.components else 0
 
-    # Я начинаю с пустого собственного состояния; обновлю, если нашёл свой entity.
-    own_position = Position(entity_id=0, x=0, y=0)
-    own_water    = 0
-    own_transporting = False
+    # Я инициализирую собственное состояние предыдущими значениями —
+    # дельта-обновление обновит только те поля, которые изменились.
+    own_position = prev_position if prev_position is not None else Position(entity_id=0, x=0, y=0)
+    own_water    = prev_water
+    own_transporting = prev_transporting
     own_found    = False
 
     visible_entities: list[VisibleEntity] = []
@@ -438,22 +466,23 @@ def parse_ka_sense(proto: MessageProto, agent_id: int, agent_type: AgentType) ->
 
             # --- Собственное состояние агента ---
             if eid == agent_id and eurn in _ENTITY_URN_TO_AGENT_TYPE:
-                x = props[PROP_X].intValue          if PROP_X in props else own_position.x
-                y = props[PROP_Y].intValue          if PROP_Y in props else own_position.y
-                # Я читаю PROP_POSITION как intValue: entity_id хранится как int в PropertyProto.
-                pos_id = props[PROP_POSITION].intValue if PROP_POSITION in props else 0
+                # Я использую _defined_int_val с предыдущими значениями как default,
+                # чтобы дельта-обновление без PROP_POSITION не сбрасывало позицию в 0.
+                x      = _defined_int_val(props, PROP_X, own_position.x)
+                y      = _defined_int_val(props, PROP_Y, own_position.y)
+                pos_id = _defined_int_val(props, PROP_POSITION, own_position.entity_id)
                 own_position = Position(entity_id=pos_id, x=x, y=y)
-                own_water    = props[PROP_WATER_QUANTITY].intValue if PROP_WATER_QUANTITY in props else own_water
+                own_water    = _defined_int_val(props, PROP_WATER_QUANTITY, own_water)
                 own_found    = True
                 continue
 
             # --- Состояния союзников ---
             if eurn in _ENTITY_URN_TO_AGENT_TYPE and eid != agent_id:
                 ally_agent_type = _ENTITY_URN_TO_AGENT_TYPE[eurn]
-                x = props[PROP_X].intValue          if PROP_X in props else 0
-                y = props[PROP_Y].intValue          if PROP_Y in props else 0
-                pos_id = props[PROP_POSITION].intValue if PROP_POSITION in props else 0
-                water  = props[PROP_WATER_QUANTITY].intValue if PROP_WATER_QUANTITY in props else 0
+                x      = _defined_int_val(props, PROP_X, 0)
+                y      = _defined_int_val(props, PROP_Y, 0)
+                pos_id = _defined_int_val(props, PROP_POSITION, 0)
+                water  = _defined_int_val(props, PROP_WATER_QUANTITY, 0)
                 ally = AgentState(
                     id=eid,
                     type=ally_agent_type,

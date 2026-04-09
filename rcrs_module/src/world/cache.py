@@ -106,7 +106,11 @@ class WorldModel:
             self.refuge_ids = list(packet.refuge_ids)
             logger.info("Я сохранил %d убежищ: %s", len(self.refuge_ids), self.refuge_ids)
 
-        # Я обновляю союзников до обновления задач — f_social читает agents[].
+        # Я заменяю словарь союзников целиком данными текущего такта — это
+        # предотвращает деградацию f_social из-за устаревших позиций агентов,
+        # которые давно вышли из зоны видимости и могли переместиться куда угодно.
+        # Агенты, невидимые в текущем такте, не участвуют в расчёте f_social.
+        self.agents.clear()
         self.update_agents(packet.ally_states)
 
         # Я удаляю сущности, которые ядро пометило как удалённые (ChangeSet.deletes).

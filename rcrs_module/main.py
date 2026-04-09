@@ -173,7 +173,17 @@ def _dispatch_action(
             # Пока гражданский ещё завален (buriedness > 0) — продолжаю AKRescue.
             # Когда buriedness == 0 — гражданский свободен, отправляю AKLoad.
             entity = world_model.tasks.get(target_id)
-            buriedness = entity.raw_sensor_data.buriedness if entity is not None else None
+            if entity is None:
+                # Сущность исчезла из кэша (удалена ядром или вышла из зоны) —
+                # отправлять AKLoad без данных опасно: ядро может отклонить команду.
+                # Я сбрасываю цель, чтобы на следующем такте выбрать новую.
+                logger.warning(
+                    "Я не нашёл сущность target_id=%d в кэше, сбрасываю цель (tick=%d)",
+                    target_id, tick,
+                )
+                client.send_rest(tick)
+                return False
+            buriedness = entity.raw_sensor_data.buriedness
             if buriedness is not None and buriedness > 0:
                 client.send_rescue(tick, target_id)
                 logger.info("Я отправил AKRescue: target_id=%d, buriedness=%d, tick=%d", target_id, buriedness, tick)
@@ -262,7 +272,7 @@ def main() -> None:
                     break
                 logger.warning("Я не получил KASense в срок, продолжаю ожидание (такт)")
                 continue
-            except (ConnectionRefusedError, OSError) as exc:
+            except (ConnectionError, ConnectionRefusedError, OSError) as exc:
                 logger.error("Я потерял соединение при получении данных: %s", exc)
                 break
 
@@ -442,7 +452,7 @@ def main() -> None:
                     # на AKRest, когда гражданский не имеет валидного position_on_edge.
                     if not target_valid:
                         current_target_id = None
-            except (ConnectionRefusedError, TimeoutError, OSError) as exc:
+            except (ConnectionError, ConnectionRefusedError, TimeoutError, OSError) as exc:
                 logger.error("Я потерял соединение при отправке команды: %s", exc)
                 break
 
