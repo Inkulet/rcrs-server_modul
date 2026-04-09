@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import signal
 import sys
 import time
@@ -60,6 +61,11 @@ SOCIAL_RADIUS: float = 30_000.0
 # Ядро само ограничит фактически отправляемое количество воды текущим запасом агента.
 MAX_WATER_DISCHARGE: int = 10_000
 
+# Я задаю максимальный радиус действия команды AKExtinguish (мм).
+# В RCRS параметр fire.extinguish.max-distance обычно равен 30 000 мм (30 м).
+# Ядро проигнорирует AKExtinguish, если евклидово расстояние до цели превышает этот радиус.
+FIRE_EXTINGUISH_MAX_DISTANCE: float = 30_000.0
+
 # --- Глобальный флаг остановки (используется обработчиком SIGTERM) ---
 _shutdown_requested: bool = False
 
@@ -74,13 +80,17 @@ def _sigterm_handler(signum: int, frame: object) -> None:
 signal.signal(signal.SIGTERM, _sigterm_handler)
 
 
-def _get_nav_node(target_id: int, world_model: WorldModel) -> int:
+def _get_nav_node(target_id: int, world_model: WorldModel) -> int | None:
     """Здесь я определяю узел графа для навигации к цели.
 
     Для гражданских (CIVILIAN) entity_id — это сам объект гражданского, которого
     нет в дорожном графе. Я навигирую к зданию/дороге, на которой находится
     гражданский (PROP_POSITION → position_on_edge). Для зданий и завалов
     entity_id совпадает с узлом графа напрямую.
+
+    Возвращаю None, если ни position_on_edge, ни target_id не являются
+    узлами графа — вызывающий код должен сбросить цель, чтобы агент
+    не застрял навсегда на AKRest.
     """
     entity = world_model.tasks.get(target_id)
     if entity is not None and entity.raw_sensor_data.position_on_edge is not None:
@@ -89,7 +99,15 @@ def _get_nav_node(target_id: int, world_model: WorldModel) -> int:
         # устаревшим или указывать на объект вне зоны карты.
         if world_model.road_graph.has_node(pos):
             return pos
-    return target_id
+    # Я проверяю, является ли target_id узлом графа напрямую (здания, дороги).
+    # Для гражданских и завалов target_id отсутствует в графе — без position_on_edge
+    # навигация невозможна и цель нужно сбросить.
+    if world_model.road_graph.has_node(target_id):
+        return target_id
+    logger.warning(
+        "Я не нашёл узла графа для target_id=%d (position_on_edge тоже не в графе)", target_id,
+    )
+    return None
 
 
 def _dispatch_action(
@@ -99,7 +117,7 @@ def _dispatch_action(
     target_id: int,
     agent_node_id: int,
     world_model: WorldModel,
-) -> None:
+) -> bool:
     """Здесь я отправляю типизированную команду в зависимости от типа агента.
 
     Логика:
@@ -109,30 +127,42 @@ def _dispatch_action(
     - Агент «у цели», когда его позиция совпадает с nav_node_id.
     - При достижении: выполняю целевое действие по типу агента (UC-7).
     - Иначе: отправляю AKMove по кратчайшему пути к nav_node_id.
+
+    Возвращаю True, если цель остаётся валидной; False — если цель нужно сбросить
+    (нет узла графа или нет пути), чтобы агент не застрял на AKRest навсегда.
     """
     # Я определяю узел навигации — для гражданских это здание, где они находятся.
     nav_node_id = _get_nav_node(target_id, world_model)
+
+    if nav_node_id is None:
+        logger.warning(
+            "Я не нашёл узла графа для target_id=%d, сбрасываю цель", target_id,
+        )
+        client.send_rest(tick)
+        return False
 
     path = compute_path(world_model.road_graph, agent_node_id, nav_node_id)
 
     if not path:
         logger.warning(
-            "Я не могу построить путь к target_id=%d (nav_node=%d), отправляю AKRest",
+            "Я не могу построить путь к target_id=%d (nav_node=%d), сбрасываю цель",
             target_id, nav_node_id,
         )
         client.send_rest(tick)
-        return
+        return False
 
     # Я считаю агента «у цели», если его текущий узел совпадает с навигационным узлом.
-    # Для пожарных я также считаю «у цели», если nav_node — сосед текущего узла,
-    # потому что в RCRS AKExtinguish работает на расстоянии fire.extinguish.max-distance
-    # и пожарный может тушить здание с прилегающей дороги, не входя внутрь.
+    # Для пожарных я проверяю евклидово расстояние до цели вместо соседства в графе,
+    # потому что AKExtinguish имеет жёсткий максимальный радиус поражения
+    # (fire.extinguish.max-distance). Соседние узлы графа могут быть в 100-200 м друг
+    # от друга, а радиус тушения — 30 м: ядро проигнорирует команду, если агент слишком далеко.
     if agent_type == AgentType.FIRE_BRIGADE:
-        at_target = (
-            agent_node_id == nav_node_id
-            or world_model.road_graph.has_node(nav_node_id)
-            and nav_node_id in world_model.road_graph.neighbors(agent_node_id)
-        )
+        agent_attrs = world_model.road_graph.nodes.get(agent_node_id, {})
+        target_attrs = world_model.road_graph.nodes.get(nav_node_id, {})
+        ax, ay = agent_attrs.get("x", 0), agent_attrs.get("y", 0)
+        tx, ty = target_attrs.get("x", 0), target_attrs.get("y", 0)
+        eucl_dist = math.hypot(tx - ax, ty - ay)
+        at_target = eucl_dist <= FIRE_EXTINGUISH_MAX_DISTANCE
     else:
         at_target = (agent_node_id == nav_node_id)
 
@@ -168,6 +198,7 @@ def _dispatch_action(
             "Я отправил AKMove: nav_node=%d, path_len=%d, first=%d, last=%d",
             nav_node_id, len(path), path[0], path[-1],
         )
+    return True
 
 
 def main() -> None:
@@ -221,8 +252,6 @@ def main() -> None:
 
     try:
         while not _shutdown_requested:
-            tick_start = time.perf_counter()
-
             # --- Шаг 1: Восприятие (Perception) ---
             try:
                 packet = client.receive_sense()
@@ -236,6 +265,10 @@ def main() -> None:
             except (ConnectionRefusedError, OSError) as exc:
                 logger.error("Я потерял соединение при получении данных: %s", exc)
                 break
+
+            # Я начинаю отсчёт времени только после получения пакета восприятия,
+            # чтобы не включать время ожидания следующего такта ядра (~1 с).
+            tick_start = time.perf_counter()
 
             # --- Шаг 2: Обновление модели мира (World Update) ---
             # Я применяю весь пакет сразу: граф (если такт 0), союзники, задачи.
@@ -256,20 +289,24 @@ def main() -> None:
                 client.send_rest(packet.tick)
                 continue
 
-            # --- Шаг 3: Пересчёт реальных дистанций по графу (Navigation, UC-6) ---
-            # Я обновляю path_distance у всех известных сущностей (исторический кэш +
-            # свежие данные такта), а не только у видимых в текущем такте.
-            # Это позволяет агенту продолжать работу с целями, вышедшими из зоны видимости.
-            enriched_entities = fill_path_distances(
+            # --- Шаг 3: Быстрая фильтрация по типу + пересчёт дистанций (UC-6) ---
+            # Я сначала отсекаю нерелевантные типы сущностей (O(M) без копирования),
+            # а затем вычисляю path_distance только для оставшихся — это снижает
+            # число обработанных сущностей на 2/3 и убирает O(M) глубоких копий.
+            allowed_type = dispatcher._allowed_entity_type(agent_type)
+            type_relevant = [
+                e for e in world_model.tasks.values() if e.type == allowed_type
+            ]
+            fill_path_distances(
                 world_model.road_graph,
                 agent_node_id,
-                list(world_model.tasks.values()),
+                type_relevant,
             )
 
             # --- Шаг 4: Предварительная фильтрация (Pre-Filter, UC-2) ---
-            # Контракт: enriched_entities содержат реальные path_distance (уже заполнены выше).
+            # Контракт: type_relevant содержат реальные path_distance (обновлены in-place выше).
             try:
-                filtered_tasks = dispatcher.filter_tasks(agent_state, enriched_entities)
+                filtered_tasks = dispatcher.filter_tasks(agent_state, type_relevant)
             except NeedRefugeException:
                 logger.info("Я отправляю пожарного в убежище из-за отсутствия воды")
                 # Я строю маршрут до ближайшего убежища и сразу отправляю AKMove.
@@ -392,7 +429,7 @@ def main() -> None:
                 elif current_target_id is None:
                     client.send_rest(packet.tick)
                 else:
-                    _dispatch_action(
+                    target_valid = _dispatch_action(
                         client=client,
                         agent_type=agent_type,
                         tick=packet.tick,
@@ -400,6 +437,11 @@ def main() -> None:
                         agent_node_id=agent_node_id,
                         world_model=world_model,
                     )
+                    # Я сбрасываю цель, если _dispatch_action обнаружил, что к ней
+                    # невозможно построить маршрут — это предотвращает зависание агента
+                    # на AKRest, когда гражданский не имеет валидного position_on_edge.
+                    if not target_valid:
+                        current_target_id = None
             except (ConnectionRefusedError, TimeoutError, OSError) as exc:
                 logger.error("Я потерял соединение при отправке команды: %s", exc)
                 break

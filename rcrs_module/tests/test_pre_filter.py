@@ -237,12 +237,12 @@ class TestPoliceBlockadeFiltering:
 class TestBuildingFierynessEdgeCases:
     """Я проверяю граничные случаи fieryness: None и 0."""
 
-    def test_fieryness_none_filtered(self) -> None:
-        """Я проверяю: fieryness=None → данные устарели → здание отсеивается."""
+    def test_fieryness_none_kept(self) -> None:
+        """Я проверяю: fieryness=None → неполные данные → здание сохраняется для исследования."""
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
         entity = make_building(fieryness=None)
         result = make_dispatcher().filter_tasks(agent, [entity])
-        assert result == []
+        assert len(result) == 1
 
     def test_fieryness_zero_filtered(self) -> None:
         """Я проверяю: fieryness=0 → здание не горит → отсеивается."""
@@ -251,9 +251,9 @@ class TestBuildingFierynessEdgeCases:
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert result == []
 
-    def test_civilian_hp_none_filtered(self) -> None:
-        """Я проверяю: hp=None → устаревшие данные → гражданский отсеивается."""
+    def test_civilian_hp_none_kept(self) -> None:
+        """Я проверяю: hp=None → неполные данные → гражданский сохраняется для исследования."""
         agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
         entity = make_civilian(hp=None, damage=50, buriedness=5)
         result = make_dispatcher().filter_tasks(agent, [entity])
-        assert result == []
+        assert len(result) == 1

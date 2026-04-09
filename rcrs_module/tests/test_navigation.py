@@ -143,11 +143,11 @@ class TestFillPathDistances:
         assert len(updated) == 1
         assert updated[0].computed_metrics.path_distance == pytest.approx(3000.0)
 
-    def test_does_not_mutate_original(self, linear_graph: nx.Graph) -> None:
-        """Я проверяю неизменность исходного объекта (Pydantic immutable)."""
+    def test_mutates_in_place(self, linear_graph: nx.Graph) -> None:
+        """Я проверяю, что fill_path_distances обновляет path_distance in-place."""
         original = _make_entity(4, path_distance=0.0)
         fill_path_distances(linear_graph, agent_node_id=1, entities=[original])
-        assert original.computed_metrics.path_distance == pytest.approx(0.0)
+        assert original.computed_metrics.path_distance == pytest.approx(3000.0)
 
     def test_multiple_entities(self, linear_graph: nx.Graph) -> None:
         """Я проверяю обработку нескольких сущностей за один вызов."""

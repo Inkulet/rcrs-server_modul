@@ -386,17 +386,20 @@ def parse_ka_connect_ok(
                         _seen_edges.add(key)
                         # Я использую расстояние между центрами Area-сущностей,
                         # а не длину грани (edge_proto.start/end). Длина грани —
-                        # это ширина прохода, а не расстояние перемещения.
-                        # Если координаты соседа известны — евклидово расстояние;
-                        # иначе — fallback на длину грани.
-                        if eid in node_coords and neighbour in node_coords:
+                        # это ширина прохода (дверной проём, разделительная полоса),
+                        # а не расстояние перемещения между центрами объектов.
+                        if neighbour in node_coords:
                             sx, sy = node_coords[eid]
                             tx, ty = node_coords[neighbour]
                             weight = max(1.0, _math.hypot(tx - sx, ty - sy))
                         else:
-                            dx = edge_proto.endX - edge_proto.startX
-                            dy = edge_proto.endY - edge_proto.startY
-                            weight = max(1.0, _math.hypot(dx, dy))
+                            # Координаты соседа неизвестны — я вычисляю расстояние
+                            # от центра текущего узла до середины грани как нижнюю
+                            # оценку длины дороги (лучше, чем ширина прохода).
+                            sx, sy = node_coords[eid]
+                            mid_x = (edge_proto.startX + edge_proto.endX) / 2
+                            mid_y = (edge_proto.startY + edge_proto.endY) / 2
+                            weight = max(1.0, _math.hypot(mid_x - sx, mid_y - sy))
                         map_edges.append(MapEdge(source_id=eid, target_id=neighbour, weight=weight))
 
 
@@ -498,6 +501,25 @@ def parse_ka_sense(proto: MessageProto, agent_id: int, agent_type: AgentType) ->
                 utility_score=0.0,
             )
             visible_entities.append(entity)
+
+    # Я определяю, какие союзники перевозят гражданских: если PROP_POSITION
+    # гражданского совпадает с entity_id союзника — этот союзник уже загрузил
+    # гражданского. Без этой проверки f_social и распределение целей не учитывают,
+    # что союзный медик уже занят, и могут отправить второго медика к той же цели.
+    ally_transporting_ids: set[int] = set()
+    ally_id_set = {a.id for a in ally_states}
+    for ve in visible_entities:
+        if ve.type == EntityType.CIVILIAN and ve.raw_sensor_data.position_on_edge is not None:
+            civ_pos = ve.raw_sensor_data.position_on_edge
+            if civ_pos in ally_id_set:
+                ally_transporting_ids.add(civ_pos)
+    if ally_transporting_ids:
+        ally_states = [
+            ally.model_copy(update={
+                "resources": ally.resources.model_copy(update={"is_transporting": True}),
+            }) if ally.id in ally_transporting_ids else ally
+            for ally in ally_states
+        ]
 
     if not own_found:
         logger.warning(

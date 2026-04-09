@@ -88,7 +88,11 @@ def fill_path_distances(
 
     Для сущностей вне графа (завалы, гражданские) я использую position_on_edge
     (ID дороги/здания, где находится сущность) как навигационный узел.
-    Возвращаю новый список: исходные объекты неизменны (Pydantic immutable).
+
+    Я обновляю path_distance in-place (мутирую computed_metrics напрямую),
+    чтобы избежать O(M) глубоких копий Pydantic-моделей на каждый такт.
+    На крупных картах (3000-5000 сущностей) это критически важно для
+    соблюдения бюджета времени ≤1000 мс.
     """
     # Я получаю все дистанции из позиции агента одним вызовом Dijkstra.
     try:
@@ -101,7 +105,6 @@ def fill_path_distances(
         )
         dist_map = {}
 
-    updated: list[VisibleEntity] = []
     for entity in entities:
         # Я определяю навигационный узел: для сущностей не в графе
         # (гражданские, завалы) использую position_on_edge — дорогу/здание, где они находятся.
@@ -112,18 +115,14 @@ def fill_path_distances(
                 nav_id = pos
 
         distance = dist_map.get(nav_id, MAX_MAP_DISTANCE)
-        updated_metrics = entity.computed_metrics.model_copy(
-            update={"path_distance": distance}
-        )
-        updated_entity = entity.model_copy(
-            update={"computed_metrics": updated_metrics}
-        )
-        updated.append(updated_entity)
+        # Я обновляю path_distance in-place — Pydantic с validate_assignment=True
+        # валидирует значение, но не создаёт новый объект.
+        entity.computed_metrics.path_distance = distance
         logger.debug(
             "Я обновил path_distance для entity_id=%d (nav_id=%d): %.1f мм",
             entity.id, nav_id, distance,
         )
-    return updated
+    return entities
 
 
 def nearest_refuge_path(

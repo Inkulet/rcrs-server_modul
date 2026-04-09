@@ -107,10 +107,11 @@ class PreFilterDispatcher:
             damage = entity.raw_sensor_data.damage
             buriedness = entity.raw_sensor_data.buriedness
 
-            # Я фильтрую погибших: hp=None означает устаревшие данные в кэше
-            # (агент вышел из зоны видимости), hp=0 — фактическая смерть.
-            # В обоих случаях задача нерелевантна.
-            if hp is None or hp == 0:
+            # Я фильтрую только подтверждённо погибших: hp=0 — фактическая смерть.
+            # hp=None означает неполные сенсорные данные (ограниченная видимость,
+            # голосовая связь) — гражданский может быть жив, и агент должен
+            # исследовать цель, а не игнорировать её.
+            if hp is not None and hp == 0:
                 logger.debug("Я исключаю погибшего гражданского: entity_id=%s", entity.id)
                 return False
 
@@ -123,11 +124,12 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            # Я допускаю только активно горящие здания (fieryness ∈ {1, 2, 3}).
-            # fieryness=0 (не горит) — тушить нечего;
+            # Я допускаю активно горящие здания (fieryness ∈ {1, 2, 3}) И здания
+            # с неизвестным статусом (fieryness=None — неполные сенсорные данные).
+            # fieryness=0 (подтверждено: не горит) — тушить нечего;
             # fieryness ∈ {4..8} — здание уже сгорело или потушено.
-            # fieryness=None — данные устарели, здание вышло из видимости.
-            if fieryness is None or fieryness not in {1, 2, 3}:
+            # fieryness=None — данные неполные, здание может гореть — оставляю.
+            if fieryness is not None and fieryness not in {1, 2, 3}:
                 logger.debug(
                     "Я исключаю негорящее/сгоревшее здание по fieryness=%s: entity_id=%s",
                     fieryness,

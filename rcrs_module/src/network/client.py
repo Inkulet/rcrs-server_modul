@@ -83,6 +83,10 @@ class RCRSClient:
         self._socket: Optional[socket.socket] = None
         self._agent_id:   int       = 0
         self._agent_type: AgentType = AgentType.FIRE_BRIGADE
+        # Я использую персистентный буфер для защиты от TCP-рассинхронизации:
+        # если таймаут прервал чтение на середине фрейма, уже прочитанные байты
+        # сохраняются и будут использованы при следующем вызове _recv_proto.
+        self._recv_buf: bytearray = bytearray()
         # Я использую счётчик тактов только в mock-режиме.
         self._mock_tick: int = 0
 
@@ -100,6 +104,7 @@ class RCRSClient:
             return
 
         try:
+            self._recv_buf.clear()
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._socket.settimeout(self.timeout)
             self._socket.connect((self.host, self.port))
@@ -117,6 +122,7 @@ class RCRSClient:
             self._socket.close()
         finally:
             self._socket = None
+            self._recv_buf.clear()
             logger.info("Я закрыл соединение с RCRS Kernel")
 
     # ===========================================================================
@@ -291,28 +297,59 @@ class RCRSClient:
 
         Формат: [4 байта INT32 big-endian: длина][N байт: protobuf].
         Соответствует StreamConnection.deserializeMessageProto() в Java.
+
+        Я использую персистентный буфер self._recv_buf для защиты от TCP-
+        рассинхронизации: если socket.timeout прерывает чтение на середине
+        фрейма (заголовок прочитан, тело — частично), уже полученные байты
+        сохраняются в буфере. При следующем вызове чтение продолжается
+        с того же места, а не с нуля — это предотвращает фатальный desync,
+        при котором остаток предыдущего сообщения был бы интерпретирован
+        как заголовок нового.
         """
         if self._socket is None:
             raise ConnectionError("Нет активного соединения с ядром симулятора")
 
         try:
-            # Шаг 1: читаю 4-байтовый заголовок длины
-            header = self._recv_exactly(4)
-            size = unpack_frame_length(header)
+            # Шаг 1: я накапливаю 4-байтовый заголовок длины в персистентный буфер.
+            # Если буфер уже содержит байты от предыдущего прерванного вызова,
+            # чтение продолжается с того же места.
+            while len(self._recv_buf) < 4:
+                chunk = self._socket.recv(4 - len(self._recv_buf))
+                if not chunk:
+                    self._recv_buf.clear()
+                    raise ConnectionError("Соединение закрыто ядром при чтении заголовка фрейма")
+                self._recv_buf.extend(chunk)
 
-            if size <= 0 or size > 10_000_000:  # защита от некорректных фреймов
+            size = unpack_frame_length(bytes(self._recv_buf[:4]))
+            if size <= 0 or size > 10_000_000:
+                self._recv_buf.clear()
                 raise ConnectionError(f"Некорректная длина фрейма: {size}")
 
-            # Шаг 2: читаю ровно size байт тела
-            body = self._recv_exactly(size)
+            frame_len = 4 + size
 
-            # Шаг 3: десериализую Protobuf
+            # Шаг 2: я накапливаю тело фрейма (size байт) в тот же буфер.
+            while len(self._recv_buf) < frame_len:
+                chunk = self._socket.recv(frame_len - len(self._recv_buf))
+                if not chunk:
+                    self._recv_buf.clear()
+                    raise ConnectionError("Соединение закрыто ядром при чтении тела фрейма")
+                self._recv_buf.extend(chunk)
+
+            # Шаг 3: я извлекаю тело и очищаю использованные байты из буфера.
+            body = bytes(self._recv_buf[4:frame_len])
+            del self._recv_buf[:frame_len]
+
             proto = MessageProto()
             proto.ParseFromString(body)
             return proto
 
-        except (socket.timeout, ConnectionResetError, BrokenPipeError) as exc:
+        except (ConnectionResetError, BrokenPipeError) as exc:
+            self._recv_buf.clear()
             logger.error("Я потерял соединение при получении данных: %s", exc)
+            raise
+        except socket.timeout:
+            # Я НЕ очищаю буфер при таймауте — частично прочитанные данные
+            # сохранены и будут дочитаны при следующем вызове.
             raise
 
     def _recv_exactly(self, n: int) -> bytes:
