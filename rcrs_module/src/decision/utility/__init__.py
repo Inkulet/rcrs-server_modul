@@ -1,1 +1,0 @@
-"""Пакет decision.utility."""
