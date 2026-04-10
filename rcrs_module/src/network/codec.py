@@ -234,17 +234,18 @@ def build_ak_move(
     msg.components[COMP_AGENT_ID].entityID = agent_id
     msg.components[COMP_TIME].intValue     = time
 
-    id_list = IntListProto()
-    id_list.values.extend(path)
-    msg.components[COMP_PATH].entityIDList.CopyFrom(id_list)
+    # Я добавляю маршрут напрямую в entityIDList.values без CopyFrom.
+    msg.components[COMP_PATH].entityIDList.values.extend(path)
 
-    # Я добавляю координаты только если они явно переданы — иначе Protobuf
-    # автоматически создаёт компоненты со значением -1, и ядро пытается
-    # вычислить вектор движения к точке (-1, -1) за границей карты,
-    # обнуляя скорость агента.
-    if dest_x != -1 and dest_y != -1:
-        msg.components[COMP_DEST_X].intValue = dest_x
-        msg.components[COMP_DEST_Y].intValue = dest_y
+    # Я ВСЕГДА включаю COMP_DEST_X и COMP_DEST_Y в AKMove, даже если они -1.
+    # Java AKMove регистрирует 3 компонента: Path, DestinationX, DestinationY.
+    # AbstractMessage.fromMessageProto() перебирает ВСЕ зарегистрированные компоненты
+    # и вызывает component.fromMessageComponentProto(proto.getComponentsMap().get(urn)).
+    # Если компонента нет в карте, get() возвращает null → NPE в IntComponent.
+    # Значение -1 означает «нет конкретной точки назначения» — ядро корректно
+    # обрабатывает его в TrafficSimulator: if (destX != -1 && destY != -1).
+    msg.components[COMP_DEST_X].intValue = dest_x
+    msg.components[COMP_DEST_Y].intValue = dest_y
 
     logger.debug("Я собрал AKMove: agent=%d, time=%d, path=%s", agent_id, time, path)
     return pack_frame(msg.SerializeToString())
@@ -358,11 +359,17 @@ def _get_int(comp: MessageComponentProto) -> int:
 
 def parse_ka_connect_ok(
     proto: MessageProto,
-) -> tuple[int, int, list[MapNode], list[MapEdge], list[int]]:
-    """Я разбираю KAConnectOK и возвращаю (request_id, agent_id, map_nodes, map_edges, refuge_ids).
+) -> tuple[int, int, list[MapNode], list[MapEdge], list[int], Position]:
+    """Я разбираю KAConnectOK и возвращаю (request_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position).
 
     Из EntityList я извлекаю топологию карты: Road/Building-узлы → вершины графа G=(V,E),
     рёбра Road-сущностей → рёбра графа, ENT_REFUGE → список убежищ.
+
+    Я также извлекаю начальную позицию агента (PROP_POSITION, PROP_X, PROP_Y)
+    из его сущности в EntityList. Это критически важно: ядро RCRS использует
+    дельта-обновления — если агент не двигался, его PROP_POSITION не попадает
+    в KASense. Без начальной позиции agent_node_id остаётся 0, и агент
+    зацикливается на AKRest навсегда.
     """
     import math as _math
 
@@ -372,6 +379,10 @@ def parse_ka_connect_ok(
     map_nodes:  list[MapNode] = []
     map_edges:  list[MapEdge] = []
     refuge_ids: list[int]     = []
+
+    # Я инициализирую позицию дефолтом — если сущность агента не найдена в EntityList,
+    # клиент начнёт с entity_id=0 и сработает защита в main.py.
+    initial_position = Position(entity_id=0, x=0, y=0)
 
     # Я использую двухпроходной алгоритм для построения рёбер графа.
     # Проход 1: собираю координаты всех Area-узлов в словарь {entity_id: (x, y)}.
@@ -393,6 +404,19 @@ def parse_ka_connect_ok(
             urn = entity_proto.urn
             eid = entity_proto.entityID
             props = {p.urn: p for p in entity_proto.properties}
+
+            # Я извлекаю стартовую позицию нашего агента из его сущности.
+            # KAConnectOK содержит ВСЕ сущности мира, включая самого агента.
+            # Его PROP_POSITION указывает на Area-сущность (дорогу/здание), где он стоит.
+            if eid == agent_id:
+                pos_id = props[PROP_POSITION].intValue if PROP_POSITION in props and props[PROP_POSITION].defined else 0
+                x = props[PROP_X].intValue if PROP_X in props and props[PROP_X].defined else 0
+                y = props[PROP_Y].intValue if PROP_Y in props and props[PROP_Y].defined else 0
+                initial_position = Position(entity_id=pos_id, x=x, y=y)
+                logger.info(
+                    "Я извлёк начальную позицию агента agent_id=%d: pos=%d, x=%d, y=%d",
+                    agent_id, pos_id, x, y,
+                )
 
             if urn in _AREA_URNS:
                 x = props[PROP_X].intValue if PROP_X in props else 0
@@ -436,10 +460,10 @@ def parse_ka_connect_ok(
 
 
     logger.info(
-        "Я разобрал KAConnectOK: agent_id=%d, узлов=%d, рёбер=%d, убежищ=%d",
-        agent_id, len(map_nodes), len(map_edges), len(refuge_ids),
+        "Я разобрал KAConnectOK: agent_id=%d, узлов=%d, рёбер=%d, убежищ=%d, start_pos=%d",
+        agent_id, len(map_nodes), len(map_edges), len(refuge_ids), initial_position.entity_id,
     )
-    return request_id, agent_id, map_nodes, map_edges, refuge_ids
+    return request_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position
 
 
 def _defined_int_val(props: dict[int, Any], urn: int, default: int) -> int:

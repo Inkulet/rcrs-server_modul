@@ -183,10 +183,16 @@ class RCRSClient:
             logger.error("Я ожидал KAConnectOK (0x%04X), получил URN=0x%04X", URN_KA_CONNECT_OK, proto.urn)
             raise ConnectionError(f"Неожиданный URN при рукопожатии: 0x{proto.urn:04X}")
 
-        req_id, agent_id, map_nodes, map_edges, refuge_ids = parse_ka_connect_ok(proto)
+        req_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position = parse_ka_connect_ok(proto)
 
         self._agent_id   = agent_id
         self._agent_type = agent_type
+        # Я сохраняю начальную позицию агента из KAConnectOK в _prev_position.
+        # Это критически важно: ядро RCRS использует дельта-обновления — если агент
+        # не двигался, его PROP_POSITION не попадает в KASense первого такта.
+        # Без начальной позиции parse_ka_sense вернёт entity_id=0, и агент
+        # зацикливается на AKRest навсегда.
+        self._prev_position = initial_position
         # Я сохраняю данные карты и убежищ для передачи в первом PerceptionPacket.
         self._initial_map_nodes  = map_nodes
         self._initial_map_edges  = map_edges
