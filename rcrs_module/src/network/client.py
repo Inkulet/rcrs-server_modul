@@ -14,14 +14,18 @@ import struct
 from typing import List, Optional
 
 from network.codec import (
+    ENT_AMBULANCE_CENTRE,
     ENT_AMBULANCE_TEAM,
     ENT_FIRE_BRIGADE,
+    ENT_FIRE_STATION,
     ENT_POLICE_FORCE,
+    ENT_POLICE_OFFICE,
     URN_KA_CONNECT_ERROR,
     URN_KA_CONNECT_OK,
     URN_KA_SENSE,
     build_ak_acknowledge,
     build_ak_clear,
+    build_ak_clear_area,
     build_ak_connect,
     build_ak_extinguish,
     build_ak_load,
@@ -52,10 +56,14 @@ from world.entities import (
 logger = logging.getLogger(__name__)
 
 # Я сопоставляю тип агента с URN для формирования AKConnect.requestedEntityTypes.
+# Я включаю и полевых (platoon), и центральных (center) агентов.
 _AGENT_TYPE_TO_ENTITY_URN: dict[AgentType, int] = {
-    AgentType.FIRE_BRIGADE:   ENT_FIRE_BRIGADE,
-    AgentType.AMBULANCE_TEAM: ENT_AMBULANCE_TEAM,
-    AgentType.POLICE_FORCE:   ENT_POLICE_FORCE,
+    AgentType.FIRE_BRIGADE:    ENT_FIRE_BRIGADE,
+    AgentType.AMBULANCE_TEAM:  ENT_AMBULANCE_TEAM,
+    AgentType.POLICE_FORCE:    ENT_POLICE_FORCE,
+    AgentType.FIRE_STATION:    ENT_FIRE_STATION,
+    AgentType.AMBULANCE_CENTRE: ENT_AMBULANCE_CENTRE,
+    AgentType.POLICE_OFFICE:   ENT_POLICE_OFFICE,
 }
 
 
@@ -277,9 +285,20 @@ class RCRSClient:
         logger.info("Я отправил AKExtinguish: time=%d, target=%d, water=%d", time, target_id, water)
 
     def send_clear(self, time: int, target_id: int) -> None:
-        """Я отправляю AKClear — команду расчистки завала."""
+        """Я отправляю AKClear — команду расчистки конкретного завала по его ID."""
         self._send_command(build_ak_clear(self._agent_id, time, target_id))
         logger.info("Я отправил AKClear: time=%d, target=%d", time, target_id)
+
+    def send_clear_area(self, time: int, dest_x: int, dest_y: int) -> None:
+        """Я отправляю AKClearArea — команду расчистки завалов в направлении точки (dest_x, dest_y).
+
+        В отличие от send_clear (требует конкретный target_id завала),
+        AKClearArea расчищает все завалы в конусообразной области
+        от агента до целевой точки. Это предпочтительный способ расчистки,
+        т.к. не требует точного ID завала.
+        """
+        self._send_command(build_ak_clear_area(self._agent_id, time, dest_x, dest_y))
+        logger.info("Я отправил AKClearArea: time=%d, dest=(%d,%d)", time, dest_x, dest_y)
 
     def send_load(self, time: int, target_id: int) -> None:
         """Я отправляю AKLoad — команду погрузки гражданского."""

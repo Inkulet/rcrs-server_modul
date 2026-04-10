@@ -115,6 +115,7 @@ MSG_AK_UNLOAD     = _STD_MSG | 4   # 0x1304
 MSG_AK_EXTINGUISH = _STD_MSG | 7   # 0x1307
 MSG_AK_RESCUE     = _STD_MSG | 8   # 0x1308
 MSG_AK_CLEAR      = _STD_MSG | 9   # 0x1309
+MSG_AK_CLEAR_AREA = _STD_MSG | 10  # 0x130A  AKClearArea — расчистка в направлении (destX, destY)
 
 # --- Компоненты командных сообщений (StandardMessageComponentURN) ---
 COMP_TARGET   = _STD_CMP | 1  # 0x1401
@@ -124,10 +125,15 @@ COMP_WATER    = _STD_CMP | 4  # 0x1404
 COMP_PATH     = _STD_CMP | 5  # 0x1405
 
 # Я сопоставляю URN сущности с типом агента для заполнения AgentState.type.
+# Я включаю и полевых (platoon), и центральных (center) агентов,
+# чтобы parse_ka_sense корректно обрабатывал все типы.
 _ENTITY_URN_TO_AGENT_TYPE: dict[int, AgentType] = {
-    ENT_FIRE_BRIGADE:  AgentType.FIRE_BRIGADE,
-    ENT_AMBULANCE_TEAM: AgentType.AMBULANCE_TEAM,
-    ENT_POLICE_FORCE:  AgentType.POLICE_FORCE,
+    ENT_FIRE_BRIGADE:    AgentType.FIRE_BRIGADE,
+    ENT_AMBULANCE_TEAM:  AgentType.AMBULANCE_TEAM,
+    ENT_POLICE_FORCE:    AgentType.POLICE_FORCE,
+    ENT_FIRE_STATION:    AgentType.FIRE_STATION,
+    ENT_AMBULANCE_CENTRE: AgentType.AMBULANCE_CENTRE,
+    ENT_POLICE_OFFICE:   AgentType.POLICE_OFFICE,
 }
 
 # Я сопоставляю URN сущности с EntityType для задач (здания, гражданские, завалы).
@@ -283,6 +289,27 @@ def build_ak_clear(agent_id: int, time: int, target_id: int) -> bytes:
     msg.components[COMP_TIME].intValue     = time
     msg.components[COMP_TARGET].entityID   = target_id
     logger.debug("Я собрал AKClear: agent=%d, time=%d, target=%d", agent_id, time, target_id)
+    return pack_frame(msg.SerializeToString())
+
+
+def build_ak_clear_area(agent_id: int, time: int, dest_x: int, dest_y: int) -> bytes:
+    """Я собираю AKClearArea — команду расчистки завалов в направлении точки (dest_x, dest_y).
+
+    В отличие от AKClear (указывает конкретный target_id завала), AKClearArea
+    расчищает все завалы в конусообразной области от агента до целевой точки.
+    Это полезно, когда agent видит дорогу заблокированной, но точный ID завала
+    неизвестен или завал слишком далеко для AKClear (> clear.repair.distance).
+    """
+    msg = MessageProto()
+    msg.urn = MSG_AK_CLEAR_AREA
+    msg.components[COMP_AGENT_ID].entityID = agent_id
+    msg.components[COMP_TIME].intValue     = time
+    msg.components[COMP_DEST_X].intValue   = dest_x
+    msg.components[COMP_DEST_Y].intValue   = dest_y
+    logger.debug(
+        "Я собрал AKClearArea: agent=%d, time=%d, dest=(%d,%d)",
+        agent_id, time, dest_x, dest_y,
+    )
     return pack_frame(msg.SerializeToString())
 
 
@@ -652,6 +679,7 @@ __all__ = [
     "COMP_REQUEST_ID", "COMP_AGENT_ID", "COMP_VERSION", "COMP_NAME",
     "COMP_ENTITY_TYPES", "COMP_ENTITIES", "COMP_TIME", "COMP_UPDATES",
     "ENT_CIVILIAN", "ENT_FIRE_BRIGADE", "ENT_AMBULANCE_TEAM", "ENT_POLICE_FORCE",
+    "ENT_FIRE_STATION", "ENT_AMBULANCE_CENTRE", "ENT_POLICE_OFFICE",
     "ENT_BUILDING", "ENT_ROAD", "ENT_BLOCKADE",
     "PROP_X", "PROP_Y", "PROP_HP", "PROP_DAMAGE", "PROP_BURIEDNESS",
     "PROP_TEMPERATURE", "PROP_FIERYNESS", "PROP_FLOORS",
@@ -664,7 +692,7 @@ __all__ = [
     # Сборка команд
     "build_ak_connect", "build_ak_acknowledge",
     "build_ak_move", "build_ak_rescue", "build_ak_extinguish",
-    "build_ak_clear", "build_ak_load", "build_ak_unload", "build_ak_rest",
+    "build_ak_clear", "build_ak_clear_area", "build_ak_load", "build_ak_unload", "build_ak_rest",
     # Разбор ответов ядра
     "parse_ka_connect_ok", "parse_ka_sense",
 ]

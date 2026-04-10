@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import random
 import signal
 import sys
 import time
@@ -71,6 +72,13 @@ FIRE_EXTINGUISH_MAX_DISTANCE: float = 30_000.0
 # Ядро проигнорирует AKClear, если евклидово расстояние до завала превышает этот радиус.
 POLICE_CLEAR_MAX_DISTANCE: float = 10_000.0
 
+# --- Длина случайного маршрута (количество узлов графа) ---
+# Я моделирую поведение Java AbstractSampleAgent.randomWalk():
+# агент строит случайный маршрут через RANDOM_WALK_LENGTH соседних узлов графа,
+# чтобы исследовать карту и обнаружить пожары, завалы и гражданских.
+# Без этого агент стоит на месте, когда в зоне видимости нет задач.
+RANDOM_WALK_LENGTH: int = 50
+
 # --- Глобальный флаг остановки (используется обработчиком SIGTERM) ---
 _shutdown_requested: bool = False
 
@@ -83,6 +91,43 @@ def _sigterm_handler(signum: int, frame: object) -> None:
 
 
 signal.signal(signal.SIGTERM, _sigterm_handler)
+
+
+def _random_walk(graph: "nx.Graph", start_node: int, length: int = RANDOM_WALK_LENGTH) -> list[int]:
+    """Здесь я строю случайный маршрут через соседние узлы дорожного графа.
+
+    Я реализую аналог Java AbstractSampleAgent.randomWalk():
+    начиная от текущей позиции агента, я выбираю случайного соседа
+    на каждом шаге и добавляю его в маршрут. Это позволяет агенту
+    исследовать карту и обнаруживать задачи за пределами начальной
+    зоны видимости (Line-of-Sight).
+
+    Если у узла нет соседей (тупик) — маршрут прерывается досрочно.
+    Маршрут всегда начинается с start_node, как того требует AKMove.
+    """
+    import networkx as nx
+
+    if not graph.has_node(start_node):
+        logger.warning("Я не нашёл start_node=%d в графе для random walk", start_node)
+        return [start_node]
+
+    path: list[int] = [start_node]
+    current = start_node
+
+    for _ in range(length):
+        neighbors = list(graph.neighbors(current))
+        if not neighbors:
+            # Я попал в тупик — возвращаю то, что построил.
+            break
+        next_node = random.choice(neighbors)
+        path.append(next_node)
+        current = next_node
+
+    logger.debug(
+        "Я построил random walk: start=%d, длина=%d узлов",
+        start_node, len(path),
+    )
+    return path
 
 
 def _get_nav_node(target_id: int, world_model: WorldModel) -> int | None:
@@ -220,8 +265,13 @@ def _dispatch_action(
             client.send_extinguish(tick, target_id, water=MAX_WATER_DISCHARGE)
             logger.info("Я отправил AKExtinguish: target_id=%d, tick=%d", target_id, tick)
         elif agent_type == AgentType.POLICE_FORCE:
-            client.send_clear(tick, target_id)
-            logger.info("Я отправил AKClear: target_id=%d, tick=%d", target_id, tick)
+            # Я использую AKClearArea вместо AKClear: AKClearArea расчищает
+            # конусообразную область от агента в направлении точки (tx, ty),
+            # что эффективнее, чем AKClear по конкретному target_id.
+            # ClearSimulator в RCRS обрабатывает AKClearArea: удаляет завалы,
+            # пересекающие конус, и уменьшает repair_cost.
+            client.send_clear_area(tick, tx, ty)
+            logger.info("Я отправил AKClearArea: dest=(%d,%d), tick=%d", tx, ty, tick)
     else:
         # Я движусь по маршруту — ядро переместит агента на максимально возможное расстояние.
         # Для пожарных и полицейских на той же дороге, что и цель, я передаю dest_x,dest_y
@@ -240,6 +290,52 @@ def _dispatch_action(
     return True
 
 
+# Я определяю множество центральных типов агентов для быстрой проверки.
+# Центральные агенты не перемещаются и не выполняют действий — они только
+# ретранслируют сообщения между каналами связи (в Java: SampleCenter.java).
+_CENTER_AGENT_TYPES: frozenset[AgentType] = frozenset({
+    AgentType.FIRE_STATION,
+    AgentType.AMBULANCE_CENTRE,
+    AgentType.POLICE_OFFICE,
+})
+
+
+def _run_center_agent(client: RCRSClient, agent_type: AgentType) -> None:
+    """Здесь я запускаю цикл центрального агента (FIRE_STATION / AMBULANCE_CENTRE / POLICE_OFFICE).
+
+    Центральные агенты в RCRS — это стационарные объекты (здания),
+    которые служат ретрансляторами сообщений между полевыми агентами.
+    В базовой реализации без межагентной коммуникации они просто
+    отправляют AKRest каждый такт, чтобы ядро не ожидало их команды бесконечно.
+    Без подключения центральных агентов ядро может зависнуть, ожидая
+    контроллеры для всех 93 сущностей (90 полевых + 3 центральных).
+    """
+    logger.info("Я запускаю центральный агент: type=%s", agent_type.value)
+
+    try:
+        while not _shutdown_requested:
+            try:
+                packet = client.receive_sense()
+            except TimeoutError:
+                if _shutdown_requested:
+                    break
+                continue
+            except (ConnectionError, OSError) as exc:
+                logger.error("Я потерял соединение центрального агента: %s", exc)
+                break
+
+            # Я отправляю AKRest — центральный агент не выполняет действий.
+            client.send_rest(packet.tick)
+            logger.debug(
+                "Центральный агент %s: AKRest, такт=%d",
+                agent_type.value, packet.tick,
+            )
+    except KeyboardInterrupt:
+        logger.info("Я завершаю центральный агент %s по сигналу", agent_type.value)
+    finally:
+        client.disconnect()
+
+
 def main() -> None:
     """В этой функции я запускаю основной цикл симуляции и обрабатываю ошибки."""
 
@@ -251,7 +347,7 @@ def main() -> None:
         "--agent-type",
         choices=[t.value for t in AgentType],
         default=DEFAULT_AGENT_TYPE.value,
-        help="Тип агента RCRS (FIRE_BRIGADE / AMBULANCE_TEAM / POLICE_FORCE)",
+        help="Тип агента RCRS (FIRE_BRIGADE / AMBULANCE_TEAM / POLICE_FORCE / FIRE_STATION / AMBULANCE_CENTRE / POLICE_OFFICE)",
     )
     parser.add_argument("--host", default=KERNEL_HOST, help="Адрес ядра RCRS Kernel")
     parser.add_argument("--port", type=int, default=KERNEL_PORT, help="Порт ядра RCRS Kernel")
@@ -287,6 +383,12 @@ def main() -> None:
     except (ConnectionError, OSError) as exc:
         logger.error("Я не смог провести рукопожатие: %s", exc)
         client.disconnect()
+        return
+
+    # Я проверяю, является ли агент центральным (FIRE_STATION / AMBULANCE_CENTRE / POLICE_OFFICE).
+    # Центральные агенты не используют конвейер решений — они просто отправляют AKRest.
+    if agent_type in _CENTER_AGENT_TYPES:
+        _run_center_agent(client, agent_type)
         return
 
     try:
@@ -466,7 +568,24 @@ def main() -> None:
                         client.send_rest(packet.tick)
                         logger.warning("Я не нашёл убежища для выгрузки гражданского, такт=%d", packet.tick)
                 elif current_target_id is None:
-                    client.send_rest(packet.tick)
+                    # Я исследую карту случайным маршрутом вместо бездействия.
+                    # Без random walk агент стоит на месте и никогда не обнаруживает
+                    # задачи за пределами начальной зоны видимости (Line-of-Sight).
+                    # Это аналог Java AbstractSampleAgent.randomWalk().
+                    rw_path = _random_walk(world_model.road_graph, agent_node_id)
+                    if len(rw_path) > 1:
+                        client.send_move(packet.tick, rw_path)
+                        logger.info(
+                            "Я исследую карту random walk: %d узлов, такт=%d",
+                            len(rw_path), packet.tick,
+                        )
+                    else:
+                        # Я стою в тупике без соседей — вынужден ждать.
+                        client.send_rest(packet.tick)
+                        logger.warning(
+                            "Я не могу исследовать карту — тупик node=%d, такт=%d",
+                            agent_node_id, packet.tick,
+                        )
                 else:
                     target_valid = _dispatch_action(
                         client=client,

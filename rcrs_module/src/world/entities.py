@@ -13,11 +13,23 @@ logger = logging.getLogger(__name__)
 
 
 class AgentType(str, Enum):
-    """В этом перечислении я фиксирую типы агентов симуляции."""
+    """В этом перечислении я фиксирую типы агентов симуляции.
+
+    Я разделяю агентов на два класса:
+    - Полевые (platoon): FIRE_BRIGADE, AMBULANCE_TEAM, POLICE_FORCE — перемещаются
+      по карте и выполняют целевые действия (тушение, спасение, расчистка).
+    - Центральные (center): FIRE_STATION, AMBULANCE_CENTRE, POLICE_OFFICE —
+      стационарные объекты, ретранслирующие сообщения между агентами по каналам связи.
+    """
 
     FIRE_BRIGADE = "FIRE_BRIGADE"
     AMBULANCE_TEAM = "AMBULANCE_TEAM"
     POLICE_FORCE = "POLICE_FORCE"
+    # Я добавляю центральные типы агентов: scenario.xml содержит 1 firestation,
+    # 1 ambulancecentre, 1 policeoffice — ядро ожидает контроллеры для них.
+    FIRE_STATION = "FIRE_STATION"
+    AMBULANCE_CENTRE = "AMBULANCE_CENTRE"
+    POLICE_OFFICE = "POLICE_OFFICE"
 
 
 class EntityType(str, Enum):
