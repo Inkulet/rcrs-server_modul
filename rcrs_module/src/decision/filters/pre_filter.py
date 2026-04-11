@@ -107,14 +107,13 @@ class PreFilterDispatcher:
             damage = entity.raw_sensor_data.damage
             buriedness = entity.raw_sensor_data.buriedness
 
-            # Я фильтрую только подтверждённо погибших: hp=0 — фактическая смерть.
-            # hp=None означает неполные сенсорные данные (ограниченная видимость,
-            # голосовая связь) — гражданский может быть жив, и агент должен
-            # исследовать цель, а не игнорировать её.
+            # Я фильтрую подтверждённо погибших: hp=0 — фактическая смерть.
             if hp is not None and hp == 0:
                 logger.debug("Я исключаю погибшего гражданского: entity_id=%s", entity.id)
                 return False
 
+            # Я исключаю здоровых гражданских: damage=0 И buriedness=0 подтверждает,
+            # что гражданский не нуждается в помощи.
             if damage == 0 and buriedness == 0:
                 logger.debug(
                     "Я исключаю здорового гражданского без завала: entity_id=%s",
@@ -122,18 +121,41 @@ class PreFilterDispatcher:
                 )
                 return False
 
+            # Я исключаю гражданских с полностью неизвестным состоянием:
+            # damage=None И buriedness=None означает, что мы не знаем, нужна ли
+            # помощь. Отправлять медика к такому гражданскому — трата времени,
+            # аналогично отправке пожарного к зданию с fieryness=None.
+            if damage is None and buriedness is None:
+                logger.debug(
+                    "Я исключаю гражданского с неизвестным состоянием: entity_id=%s",
+                    entity.id,
+                )
+                return False
+
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            # Я допускаю активно горящие здания (fieryness ∈ {1, 2, 3}) И здания
-            # с неизвестным статусом (fieryness=None — неполные сенсорные данные).
-            # fieryness=0 (подтверждено: не горит) — тушить нечего;
-            # fieryness ∈ {4..8} — здание уже сгорело или потушено.
-            # fieryness=None — данные неполные, здание может гореть — оставляю.
-            if fieryness is not None and fieryness not in {1, 2, 3}:
+            # Я допускаю ТОЛЬКО подтверждённо горящие здания (fieryness ∈ {1, 2, 3}).
+            # fieryness=0 — здание не горит, тушить нечего.
+            # fieryness ∈ {4..8} — здание сгорело или потушено, тушить бессмысленно.
+            # fieryness=None — статус неизвестен; ранее я допускал такие здания,
+            # но это приводило к бесполезным перемещениям к негорящим зданиям,
+            # пока пожарный мог бы найти реальный пожар через random walk.
+            if fieryness not in {1, 2, 3}:
                 logger.debug(
-                    "Я исключаю негорящее/сгоревшее здание по fieryness=%s: entity_id=%s",
+                    "Я исключаю здание: fieryness=%s не в {1,2,3}: entity_id=%s",
                     fieryness,
                     entity.id,
+                )
+                return False
+
+        if entity.type == EntityType.BLOCKADE:
+            repair_cost = entity.raw_sensor_data.repair_cost
+            # Я исключаю завалы с repair_cost=0 (полностью расчищены, но ещё
+            # не удалены ядром из ChangeSet) и repair_cost=None (неизвестный статус).
+            if repair_cost is None or repair_cost == 0:
+                logger.debug(
+                    "Я исключаю завал: repair_cost=%s: entity_id=%s",
+                    repair_cost, entity.id,
                 )
                 return False
 

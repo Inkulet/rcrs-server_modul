@@ -137,11 +137,18 @@ _ENTITY_URN_TO_AGENT_TYPE: dict[int, AgentType] = {
 }
 
 # Я сопоставляю URN сущности с EntityType для задач (здания, гражданские, завалы).
+# Я включаю ВСЕ типы зданий: в RCRS газовые станции, центральные здания и гидранты
+# могут гореть — без их включения пожарные не видят эти пожары как цели.
 _ENTITY_URN_TO_ENTITY_TYPE: dict[int, EntityType] = {
-    ENT_CIVILIAN: EntityType.CIVILIAN,
-    ENT_BUILDING: EntityType.BUILDING,
-    ENT_REFUGE:   EntityType.BUILDING,
-    ENT_BLOCKADE: EntityType.BLOCKADE,
+    ENT_CIVILIAN:         EntityType.CIVILIAN,
+    ENT_BUILDING:         EntityType.BUILDING,
+    ENT_REFUGE:           EntityType.BUILDING,
+    ENT_GAS_STATION:      EntityType.BUILDING,
+    ENT_FIRE_STATION:     EntityType.BUILDING,
+    ENT_AMBULANCE_CENTRE: EntityType.BUILDING,
+    ENT_POLICE_OFFICE:    EntityType.BUILDING,
+    ENT_HYDRANT:          EntityType.BUILDING,
+    ENT_BLOCKADE:         EntityType.BLOCKADE,
 }
 
 # Версия протокола AKConnect (2 = IntList для типов сущностей, не StringList).
@@ -359,17 +366,18 @@ def _get_int(comp: MessageComponentProto) -> int:
 
 def parse_ka_connect_ok(
     proto: MessageProto,
-) -> tuple[int, int, list[MapNode], list[MapEdge], list[int], Position]:
-    """Я разбираю KAConnectOK и возвращаю (request_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position).
+) -> tuple[int, int, list[MapNode], list[MapEdge], list[int], Position, int]:
+    """Я разбираю KAConnectOK и возвращаю (request_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position, initial_water).
 
     Из EntityList я извлекаю топологию карты: Road/Building-узлы → вершины графа G=(V,E),
     рёбра Road-сущностей → рёбра графа, ENT_REFUGE → список убежищ.
 
     Я также извлекаю начальную позицию агента (PROP_POSITION, PROP_X, PROP_Y)
-    из его сущности в EntityList. Это критически важно: ядро RCRS использует
-    дельта-обновления — если агент не двигался, его PROP_POSITION не попадает
-    в KASense. Без начальной позиции agent_node_id остаётся 0, и агент
-    зацикливается на AKRest навсегда.
+    и начальный объём воды (PROP_WATER_QUANTITY) из его сущности в EntityList.
+    Позиция критически важна: ядро RCRS использует дельта-обновления — если агент
+    не двигался, его PROP_POSITION не попадает в KASense. Без начальной позиции
+    agent_node_id остаётся 0, и агент зацикливается на AKRest навсегда.
+    Вода важна: без неё пожарный получает NeedRefugeException на первом такте.
     """
     import math as _math
 
@@ -383,6 +391,10 @@ def parse_ka_connect_ok(
     # Я инициализирую позицию дефолтом — если сущность агента не найдена в EntityList,
     # клиент начнёт с entity_id=0 и сработает защита в main.py.
     initial_position = Position(entity_id=0, x=0, y=0)
+    # Я инициализирую начальный объём воды значением 0 — если сущность агента
+    # не содержит PROP_WATER_QUANTITY, filter_tasks не вызовет NeedRefugeException
+    # ложно, т.к. _prev_water будет обновлён из первого KASense.
+    initial_water: int = 0
 
     # Я использую двухпроходной алгоритм для построения рёбер графа.
     # Проход 1: собираю координаты всех Area-узлов в словарь {entity_id: (x, y)}.
@@ -413,9 +425,13 @@ def parse_ka_connect_ok(
                 x = props[PROP_X].intValue if PROP_X in props and props[PROP_X].defined else 0
                 y = props[PROP_Y].intValue if PROP_Y in props and props[PROP_Y].defined else 0
                 initial_position = Position(entity_id=pos_id, x=x, y=y)
+                # Я извлекаю начальный объём воды для пожарных — без этого
+                # первый такт может ложно вызвать NeedRefugeException (water=0).
+                if PROP_WATER_QUANTITY in props and props[PROP_WATER_QUANTITY].defined:
+                    initial_water = props[PROP_WATER_QUANTITY].intValue
                 logger.info(
-                    "Я извлёк начальную позицию агента agent_id=%d: pos=%d, x=%d, y=%d",
-                    agent_id, pos_id, x, y,
+                    "Я извлёк начальную позицию агента agent_id=%d: pos=%d, x=%d, y=%d, water=%d",
+                    agent_id, pos_id, x, y, initial_water,
                 )
 
             if urn in _AREA_URNS:
@@ -460,10 +476,10 @@ def parse_ka_connect_ok(
 
 
     logger.info(
-        "Я разобрал KAConnectOK: agent_id=%d, узлов=%d, рёбер=%d, убежищ=%d, start_pos=%d",
-        agent_id, len(map_nodes), len(map_edges), len(refuge_ids), initial_position.entity_id,
+        "Я разобрал KAConnectOK: agent_id=%d, узлов=%d, рёбер=%d, убежищ=%d, start_pos=%d, water=%d",
+        agent_id, len(map_nodes), len(map_edges), len(refuge_ids), initial_position.entity_id, initial_water,
     )
-    return request_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position
+    return request_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position, initial_water
 
 
 def _defined_int_val(props: dict[int, Any], urn: int, default: int) -> int:

@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # --- Параметры подключения ---
 KERNEL_HOST: str  = "127.0.0.1"
 KERNEL_PORT: int  = 7000
-KERNEL_TIMEOUT: float = 5.0
+KERNEL_TIMEOUT: float = 30.0
 
 # --- Тип агента и имя для рукопожатия (дефолты; переопределяются через CLI) ---
 # Я задаю дефолтный тип агента. При запуске нескольких процессов используйте
@@ -367,12 +367,21 @@ def main() -> None:
 
     current_target_id: int | None = None
 
-    # --- Шаг 0: Подключение к ядру ---
-    try:
-        client.connect()
-    except (ConnectionRefusedError, TimeoutError, OSError) as exc:
-        logger.error("Я не смог установить соединение и завершаю работу: %s", exc)
-        return
+    # --- Шаг 0: Подключение к ядру с повторными попытками ---
+    # Я жду готовности ядра до MAX_CONNECT_RETRIES попыток с интервалом 3 с.
+    # Ядро RCRS загружает GIS, симуляторы и viewer перед открытием порта —
+    # на карте Kobe это занимает 15–30 с после запуска start.sh.
+    MAX_CONNECT_RETRIES: int = 20
+    for attempt in range(1, MAX_CONNECT_RETRIES + 1):
+        try:
+            client.connect()
+            break
+        except (ConnectionRefusedError, TimeoutError, OSError) as exc:
+            if attempt == MAX_CONNECT_RETRIES:
+                logger.error("Я исчерпал %d попыток подключения, завершаю работу: %s", MAX_CONNECT_RETRIES, exc)
+                return
+            logger.info("Я жду готовности ядра (попытка %d/%d): %s", attempt, MAX_CONNECT_RETRIES, exc)
+            time.sleep(3)
 
     # --- Шаг 0.5: Рукопожатие AKConnect → KAConnectOK → AKAcknowledge ---
     # Я провожу рукопожатие один раз после connect() — ядро возвращает agent_id
@@ -380,7 +389,7 @@ def main() -> None:
     try:
         agent_id = client.handshake(agent_name, agent_type)
         logger.info("Я завершил рукопожатие: agent_id=%d, agent_type=%s", agent_id, agent_type.value)
-    except (ConnectionError, OSError) as exc:
+    except (ConnectionError, TimeoutError, OSError) as exc:
         logger.error("Я не смог провести рукопожатие: %s", exc)
         client.disconnect()
         return
@@ -444,6 +453,20 @@ def main() -> None:
                 type_relevant,
             )
 
+            # Я логирую диагностику задач на уровне INFO, чтобы при первых запусках
+            # видеть, что именно содержится в кэше и почему фильтр отсекает задачи.
+            if packet.tick % 10 == 0 or len(type_relevant) > 0:
+                logger.info(
+                    "ДИАГ [%s] такт=%d: кэш=%d задач, type_relevant(%s)=%d",
+                    agent_type.value, packet.tick,
+                    len(world_model.tasks), allowed_type.value, len(type_relevant),
+                )
+                if type_relevant and agent_type == AgentType.FIRE_BRIGADE:
+                    # Я вывожу fieryness первых 5 зданий для быстрой диагностики.
+                    sample = type_relevant[:5]
+                    fieryness_info = [(e.id, e.raw_sensor_data.fieryness) for e in sample]
+                    logger.info("ДИАГ fieryness: %s", fieryness_info)
+
             # --- Шаг 4: Предварительная фильтрация (Pre-Filter, UC-2) ---
             # Контракт: type_relevant содержат реальные path_distance (обновлены in-place выше).
             try:
@@ -465,6 +488,13 @@ def main() -> None:
                 else:
                     client.send_rest(packet.tick)
                 continue
+
+            # Я логирую результат фильтрации для диагностики.
+            if filtered_tasks:
+                logger.info(
+                    "ДИАГ [%s] такт=%d: после фильтра=%d задач",
+                    agent_type.value, packet.tick, len(filtered_tasks),
+                )
 
             # --- Шаг 5: Расчёт полезности (Utility Calculation, UC-3/UC-4) ---
             utilities: dict[int, float] = {}
