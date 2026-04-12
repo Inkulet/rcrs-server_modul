@@ -308,6 +308,14 @@ def _dispatch_action(
             # пересекающие конус, и уменьшает repair_cost.
             client.send_clear_area(tick, tx, ty)
             logger.info("Я отправил AKClearArea: dest=(%d,%d), tick=%d", tx, ty, tick)
+            # Я удаляю завал из кэша после отправки AKClearArea, потому что ядро
+            # RCRS не всегда шлёт ChangeSet.deletes при расчистке завала.
+            # Без этого полицейский зависает: завал остаётся в кэше с repair_cost > 0,
+            # агент снова выбирает его как цель и шлёт AKClearArea в пустоту.
+            # После удаления полицейский на следующем такте выберет новый завал
+            # или перейдёт в random walk для поиска новых целей.
+            world_model.tasks.pop(target_id, None)
+            return False
     else:
         # Я движусь по маршруту — ядро переместит агента на максимально возможное расстояние.
         # Я передаю dest_x,dest_y с координатами цели для ВСЕХ типов агентов —
