@@ -158,6 +158,10 @@ class PerceptionPacket(BaseEntityModel):
     # Я передаю список удалённых ядром сущностей (ChangeSet.deletes), чтобы
     # WorldModel мог очистить кэш — например, расчищенный завал должен исчезнуть.
     deleted_entity_ids: List[StrictInt] = Field(default_factory=list)
+    # Я передаю множество target_id, услышанных от соседних агентов через AKSay.
+    # Это позволяет учитывать координацию: задачи, уже занятые другими агентами,
+    # получают штраф в функции полезности, предотвращая дублирование работы.
+    heard_target_ids: set[int] = Field(default_factory=set)
 
 
 def estimate_death_time(raw: RawSensorData) -> int:

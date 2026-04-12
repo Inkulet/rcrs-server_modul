@@ -115,7 +115,8 @@ MSG_AK_UNLOAD     = _STD_MSG | 4   # 0x1304
 MSG_AK_EXTINGUISH = _STD_MSG | 7   # 0x1307
 MSG_AK_RESCUE     = _STD_MSG | 8   # 0x1308
 MSG_AK_CLEAR      = _STD_MSG | 9   # 0x1309
-MSG_AK_CLEAR_AREA = _STD_MSG | 10  # 0x130A  AKClearArea — расчистка в направлении (destX, destY)
+MSG_AK_CLEAR_AREA = _STD_MSG | 10  # 0x130A  AKClearArea
+MSG_AK_SAY        = _STD_MSG | 5   # 0x1305  AKSay — расчистка в направлении (destX, destY)
 
 # --- Компоненты командных сообщений (StandardMessageComponentURN) ---
 COMP_TARGET   = _STD_CMP | 1  # 0x1401
@@ -123,6 +124,7 @@ COMP_DEST_X   = _STD_CMP | 2  # 0x1402
 COMP_DEST_Y   = _STD_CMP | 3  # 0x1403
 COMP_WATER    = _STD_CMP | 4  # 0x1404
 COMP_PATH     = _STD_CMP | 5  # 0x1405
+COMP_MESSAGE  = _STD_CMP | 6  # 0x1406  Message — содержимое AKSay/AKSpeak (rawData)
 
 # Я сопоставляю URN сущности с типом агента для заполнения AgentState.type.
 # Я включаю и полевых (platoon), и центральных (center) агентов,
@@ -346,6 +348,21 @@ def build_ak_rest(agent_id: int, time: int) -> bytes:
     msg.urn = MSG_AK_REST
     msg.components[COMP_AGENT_ID].entityID = agent_id
     msg.components[COMP_TIME].intValue     = time
+    return pack_frame(msg.SerializeToString())
+
+
+def build_ak_say(agent_id: int, time: int, data: bytes) -> bytes:
+    """Я собираю AKSay — голосовое сообщение ближайшим агентам.
+
+    Я использую AKSay для координации: агент транслирует ID своей текущей цели,
+    чтобы соседи не дублировали работу. Ядро доставит сообщение через VoiceChannel
+    всем агентам в радиусе comms.channels.0.range (обычно 30–50 м).
+    """
+    msg = MessageProto()
+    msg.urn = MSG_AK_SAY
+    msg.components[COMP_AGENT_ID].entityID = agent_id
+    msg.components[COMP_TIME].intValue     = time
+    msg.components[COMP_MESSAGE].rawData   = data
     return pack_frame(msg.SerializeToString())
 
 
@@ -651,6 +668,27 @@ def parse_ka_sense(
     if COMP_UPDATES in proto.components:
         deleted_ids = list(proto.components[COMP_UPDATES].changeSet.deletes)
 
+    # Я извлекаю услышанные сообщения из COMP_HEARING (CommandListComponent).
+    # Каждое AKSay от соседнего агента содержит 4-байтовый target_id (big-endian),
+    # что позволяет координировать выбор целей без дублирования работы.
+    heard_target_ids: set[int] = set()
+    if COMP_HEARING in proto.components:
+        hearing_comp = proto.components[COMP_HEARING]
+        if hearing_comp.HasField("commandList"):
+            for cmd in hearing_comp.commandList.commands:
+                if cmd.urn == MSG_AK_SAY and COMP_MESSAGE in cmd.components:
+                    raw = cmd.components[COMP_MESSAGE].rawData
+                    if len(raw) >= 4:
+                        import struct
+                        target_id = struct.unpack(">i", raw[:4])[0]
+                        if target_id > 0:
+                            heard_target_ids.add(target_id)
+    if heard_target_ids:
+        logger.debug(
+            "Я услышал %d целей от соседних агентов: %s",
+            len(heard_target_ids), heard_target_ids,
+        )
+
     packet = PerceptionPacket(
         tick=tick,
         own_state=own_state,
@@ -659,6 +697,7 @@ def parse_ka_sense(
         map_nodes=[],
         map_edges=[],
         deleted_entity_ids=deleted_ids,
+        heard_target_ids=heard_target_ids,
     )
 
     logger.debug(
@@ -727,12 +766,14 @@ __all__ = [
     "PROP_EDGES", "PROP_BLOCKADES",
     "MSG_AK_MOVE", "MSG_AK_RESCUE", "MSG_AK_EXTINGUISH",
     "MSG_AK_CLEAR", "MSG_AK_LOAD", "MSG_AK_UNLOAD", "MSG_AK_REST",
+    "MSG_AK_SAY", "COMP_MESSAGE",
     # Фреймирование
     "pack_frame", "unpack_frame_length",
     # Сборка команд
     "build_ak_connect", "build_ak_acknowledge",
     "build_ak_move", "build_ak_rescue", "build_ak_extinguish",
     "build_ak_clear", "build_ak_clear_area", "build_ak_load", "build_ak_unload", "build_ak_rest",
+    "build_ak_say",
     # Разбор ответов ядра
     "parse_ka_connect_ok", "parse_ka_sense",
 ]

@@ -32,6 +32,7 @@ from network.codec import (
     build_ak_move,
     build_ak_rescue,
     build_ak_rest,
+    build_ak_say,
     build_ak_unload,
     parse_ka_connect_ok,
     parse_ka_sense,
@@ -328,6 +329,11 @@ class RCRSClient:
         """Я отправляю AKRest — команду ожидания (агент бездействует такт)."""
         self._send_command(build_ak_rest(self._agent_id, time))
         logger.debug("Я отправил AKRest: time=%d", time)
+
+    def send_say(self, time: int, data: bytes) -> None:
+        """Я отправляю AKSay — голосовое сообщение ближайшим агентам для координации."""
+        self._send_command(build_ak_say(self._agent_id, time, data))
+        logger.debug("Я отправил AKSay: time=%d, data_len=%d", time, len(data))
 
     # ===========================================================================
     # Транспортный уровень — приватные методы
