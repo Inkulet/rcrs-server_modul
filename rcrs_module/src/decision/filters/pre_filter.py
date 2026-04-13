@@ -22,12 +22,12 @@ class PreFilterDispatcher:
         self.work_rate = work_rate
         self.average_speed = average_speed
 
-    def _allowed_entity_type(self, agent_type: AgentType) -> EntityType:
+    def _allowed_entity_types(self, agent_type: AgentType) -> frozenset[EntityType]:
         if agent_type == AgentType.FIRE_BRIGADE:
-            return EntityType.BUILDING
+            return frozenset({EntityType.BUILDING})
         if agent_type == AgentType.AMBULANCE_TEAM:
-            return EntityType.CIVILIAN
-        return EntityType.BLOCKADE
+            return frozenset({EntityType.CIVILIAN, EntityType.HUMAN})
+        return frozenset({EntityType.BLOCKADE})
 
     def filter_tasks(self, agent_state: AgentState, tasks: Iterable[VisibleEntity]) -> List[VisibleEntity]:
 
@@ -46,12 +46,12 @@ class PreFilterDispatcher:
                 )
                 raise NeedRefugeException("Я обнаружил, что у пожарного нет воды")
 
-            allowed_type = self._allowed_entity_type(agent_state.type)
+            allowed_types = self._allowed_entity_types(agent_state.type)
             tasks_list = list(tasks)
-            tasks = [e for e in tasks_list if e.type == allowed_type]
+            tasks = [e for e in tasks_list if e.type in allowed_types]
             logger.debug(
-                "Я отфильтровал сущности по типу %s: было=%d, осталось=%d, agent_id=%s",
-                allowed_type.value,
+                "Я отфильтровал сущности по типам %s: было=%d, осталось=%d, agent_id=%s",
+                ",".join(t.value for t in sorted(allowed_types, key=lambda t: t.value)),
                 len(tasks_list),
                 len(tasks),
                 agent_state.id,
@@ -97,9 +97,25 @@ class PreFilterDispatcher:
                 )
                 return False
 
+        if entity.type == EntityType.HUMAN:
+            hp = entity.raw_sensor_data.hp
+            buriedness = entity.raw_sensor_data.buriedness
+
+            if hp is not None and hp == 0:
+                logger.debug("Я исключаю погибшего агента: entity_id=%s", entity.id)
+                return False
+
+            if buriedness is None or buriedness == 0:
+                logger.debug(
+                    "Я исключаю незаваленного агента: entity_id=%s, buriedness=%s",
+                    entity.id,
+                    buriedness,
+                )
+                return False
+
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            if fieryness not in {1, 2, 3}:
+            if fieryness is not None and fieryness not in {1, 2, 3}:
                 logger.debug(
                     "Я исключаю здание: fieryness=%s не в {1,2,3}: entity_id=%s",
                     fieryness,

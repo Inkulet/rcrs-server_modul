@@ -23,6 +23,7 @@ class AgentType(str, Enum):
 class EntityType(str, Enum):
     BUILDING = "BUILDING"
     CIVILIAN = "CIVILIAN"
+    HUMAN = "HUMAN"
     BLOCKADE = "BLOCKADE"
 
 
@@ -54,6 +55,9 @@ class AgentState(BaseEntityModel):
     type: AgentType
     position: Position
     resources: Resources
+    hp: Optional[StrictInt] = Field(default=None, ge=0)
+    damage: Optional[StrictInt] = Field(default=None, ge=0)
+    buriedness: Optional[StrictInt] = Field(default=None, ge=0)
 
 
 class RawSensorData(BaseEntityModel):

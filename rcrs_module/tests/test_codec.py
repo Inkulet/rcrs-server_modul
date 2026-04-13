@@ -264,32 +264,32 @@ class TestParseKaConnectOk:
     def test_returns_correct_agent_id(self) -> None:
         """Я проверяю: parse_ka_connect_ok извлекает agent_id из компонента."""
         proto = self._make_connect_ok(agent_id=99)
-        _, agent_id, _, _, _ = parse_ka_connect_ok(proto)
+        _, agent_id, _, _, _, _, _ = parse_ka_connect_ok(proto)
         assert agent_id == 99
 
     def test_returns_correct_request_id(self) -> None:
         """Я проверяю: parse_ka_connect_ok извлекает request_id."""
         proto = self._make_connect_ok(request_id=7)
-        req_id, _, _, _, _ = parse_ka_connect_ok(proto)
+        req_id, _, _, _, _, _, _ = parse_ka_connect_ok(proto)
         assert req_id == 7
 
     def test_parses_road_nodes(self) -> None:
         """Я проверяю: Road-сущности попадают в map_nodes с правильными координатами."""
         proto = self._make_connect_ok(road_nodes=[(1, 100, 200), (2, 300, 400)])
-        _, _, nodes, _, _ = parse_ka_connect_ok(proto)
+        _, _, nodes, _, _, _, _ = parse_ka_connect_ok(proto)
         node_ids = {n.entity_id for n in nodes}
         assert {1, 2} == node_ids
 
     def test_parses_refuge_ids(self) -> None:
         """Я проверяю: ENT_REFUGE-сущности попадают в refuge_ids."""
         proto = self._make_connect_ok(refuge_ids=[501, 502])
-        _, _, _, _, refuge_ids = parse_ka_connect_ok(proto)
+        _, _, _, _, refuge_ids, _, _ = parse_ka_connect_ok(proto)
         assert set(refuge_ids) == {501, 502}
 
     def test_empty_entity_list_returns_empty_maps(self) -> None:
         """Я проверяю: отсутствие сущностей → пустые nodes, edges, refuges."""
         proto = self._make_connect_ok()
-        _, _, nodes, edges, refuges = parse_ka_connect_ok(proto)
+        _, _, nodes, edges, refuges, _, _ = parse_ka_connect_ok(proto)
         assert nodes == []
         assert edges == []
         assert refuges == []
@@ -363,6 +363,18 @@ class TestParseKaSense:
         packet = parse_ka_sense(proto, agent_id=3, agent_type=AgentType.FIRE_BRIGADE)
         assert packet.own_state.resources.water_quantity == 1234
 
+    def test_parses_own_health_fields(self) -> None:
+        """Я проверяю: hp/damage/buriedness собственного агента читаются из ChangeSet."""
+        proto = self._make_sense(agent_id=3, tick=0)
+        own_change = proto.components[COMP_UPDATES].changeSet.changes[0]
+        own_change.properties.append(_make_int_prop(PROP_HP, 8000))
+        own_change.properties.append(_make_int_prop(PROP_DAMAGE, 20))
+        own_change.properties.append(_make_int_prop(PROP_BURIEDNESS, 7))
+        packet = parse_ka_sense(proto, agent_id=3, agent_type=AgentType.AMBULANCE_TEAM)
+        assert packet.own_state.hp == 8000
+        assert packet.own_state.damage == 20
+        assert packet.own_state.buriedness == 7
+
     def test_civilian_appears_in_visible_entities(self) -> None:
         """Я проверяю: CIVILIAN в ChangeSet попадает в visible_entities."""
         extra = [(999, ENT_CIVILIAN, [
@@ -373,6 +385,23 @@ class TestParseKaSense:
         packet = parse_ka_sense(proto, agent_id=1, agent_type=AgentType.AMBULANCE_TEAM)
         entity_ids = {e.id for e in packet.visible_entities}
         assert 999 in entity_ids
+
+    def test_buried_ally_agent_appears_in_visible_entities(self) -> None:
+        """Я проверяю: завалённый союзник попадает в список задач скорой как HUMAN."""
+        extra = [(999, ENT_FIRE_BRIGADE, [
+            _make_entity_prop(PROP_POSITION, 77),
+            _make_int_prop(PROP_X, 100),
+            _make_int_prop(PROP_Y, 200),
+            _make_int_prop(PROP_HP, 9000),
+            _make_int_prop(PROP_DAMAGE, 50),
+            _make_int_prop(PROP_BURIEDNESS, 12),
+        ])]
+        proto = self._make_sense(agent_id=1, tick=5, extra_changes=extra)
+        packet = parse_ka_sense(proto, agent_id=1, agent_type=AgentType.AMBULANCE_TEAM)
+        buried_ally = next(e for e in packet.visible_entities if e.id == 999)
+        assert buried_ally.type.value == "HUMAN"
+        assert buried_ally.raw_sensor_data.buriedness == 12
+        assert buried_ally.raw_sensor_data.position_on_edge == 77
 
     def test_is_transporting_when_civilian_at_agent_position(self) -> None:
         """Я проверяю: если civilian.PROP_POSITION == agent_id, is_transporting=True."""

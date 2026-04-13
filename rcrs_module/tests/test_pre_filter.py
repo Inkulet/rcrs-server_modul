@@ -10,7 +10,7 @@ import pytest
 from decision.filters.pre_filter import NeedRefugeException, PreFilterDispatcher
 from world.entities import AgentType
 
-from conftest import make_agent, make_blockade, make_building, make_civilian
+from conftest import make_agent, make_blockade, make_building, make_civilian, make_human
 
 
 def make_dispatcher(work_rate: float = 1.0, average_speed: float = 1.0) -> PreFilterDispatcher:
@@ -60,6 +60,20 @@ class TestCivilianFiltering:
         )
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert entity in result
+
+    def test_buried_agent_kept_for_ambulance(self) -> None:
+        """Я проверяю: завалённый спасатель — релевантная задача для скорой."""
+        agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
+        entity = make_human(hp=10000, damage=0, buriedness=5, estimated_death_time=9999)
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert entity in result
+
+    def test_unburied_agent_filtered_for_ambulance(self) -> None:
+        """Я проверяю: незавалённого спасателя скорая не выбирает как задачу."""
+        agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
+        entity = make_human(hp=9000, damage=50, buriedness=0, estimated_death_time=9999)
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert result == []
 
 
 # ===========================================================================

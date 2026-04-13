@@ -21,12 +21,16 @@ from decision.filters.pre_filter import NeedRefugeException, PreFilterDispatcher
 from decision.utility.aggregator import UtilityAggregator  # noqa: E402
 from network.client import RCRSClient  # noqa: E402
 from world.cache import WorldModel  # noqa: E402
-from world.entities import AgentState, AgentType, Position  # noqa: E402
+from world.entities import AgentState, AgentType, EntityType, Position  # noqa: E402
 
 
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("agent_debug.log", mode="a"),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -186,7 +190,21 @@ def _dispatch_action(
 
             buriedness = entity.raw_sensor_data.buriedness
 
-            if buriedness == 0:
+            logger.info(
+                "ДИАГ_AT [AMBULANCE] at_target=True: target_id=%d, buriedness=%s, type=%s, tick=%d",
+                target_id, buriedness, entity.type.value, tick,
+            )
+
+            # Я считаю None как «не завален» — сервер мог не отправить свойство
+            if buriedness is None or buriedness == 0:
+                if entity.type == EntityType.HUMAN:
+                    world_model.tasks.pop(target_id, None)
+                    logger.info(
+                        "Я снял цель с агента target_id=%d: союзник уже откопан, tick=%d",
+                        target_id, tick,
+                    )
+                    return False
+
                 client.send_load(tick, target_id)
 
                 world_model.tasks.pop(target_id, None)
@@ -303,6 +321,9 @@ def main() -> None:
     current_target_id: int | None = None
 
     is_transporting_memory: bool = False
+    # Я считаю неудачные попытки найти убежище, чтобы не зависнуть навечно
+    NO_REFUGE_MAX_RETRIES: int = 5
+    no_refuge_counter: int = 0
 
     visited_nodes: set[int] = set()
 
@@ -354,41 +375,9 @@ def main() -> None:
 
             agent_state   = packet.own_state
             agent_node_id = agent_state.position.entity_id
-
-            if agent_state.resources.is_transporting:
-                nav_start_node = agent_node_id
-
-                refuge_path = nearest_refuge_path(
-                    world_model.road_graph,
-                    nav_start_node,
-                    world_model.refuge_ids,
-                )
-                if refuge_path:
-                    refuge_node = refuge_path[-1]
-
-                    if agent_node_id == refuge_node:
-                        client.send_unload(packet.tick)
-
-                        logger.info(
-                            "Я отправил AKUnload в убежище refuge_id=%d, такт=%d",
-                            refuge_node, packet.tick,
-                        )
-
-                        current_target_id = None
-                        is_transporting_memory = False
-                    else:
-                        client.send_move(packet.tick, refuge_path)
-
-                        logger.info(
-                            "Я везу гражданского к убежищу refuge_id=%d, такт=%d",
-                            refuge_node, packet.tick,
-                        )
-
-                else:
-                    client.send_rest(packet.tick)
-                    logger.warning("Я не нашёл убежища для выгрузки гражданского, такт=%d", packet.tick)
-            
-            agent_state.resources.is_transporting = is_transporting_memory
+            agent_state.resources.is_transporting = (
+                agent_state.resources.is_transporting or is_transporting_memory
+            )
 
             visited_nodes.add(agent_node_id)
 
@@ -401,9 +390,88 @@ def main() -> None:
                 client.send_rest(packet.tick)
                 continue
 
-            allowed_type = dispatcher._allowed_entity_type(agent_type)
+            if agent_state.hp is not None and agent_state.hp <= 0:
+                logger.info("Я не могу действовать: агент мёртв, такт=%d", packet.tick)
+                client.send_rest(packet.tick)
+                current_target_id = None
+                continue
+
+            if agent_state.buriedness is not None and agent_state.buriedness > 0:
+                logger.info(
+                    "Я не могу двигаться: агент завален buriedness=%d, такт=%d",
+                    agent_state.buriedness,
+                    packet.tick,
+                )
+                client.send_rest(packet.tick)
+                current_target_id = None
+                continue
+
+            if agent_state.resources.is_transporting:
+                logger.info(
+                    "ДИАГ_TRANSPORT: agent_node=%d, refuge_ids=%s, graph_nodes=%d, graph_edges=%d, tick=%d",
+                    agent_node_id,
+                    world_model.refuge_ids[:5],
+                    world_model.road_graph.number_of_nodes(),
+                    world_model.road_graph.number_of_edges(),
+                    packet.tick,
+                )
+                refuge_path = nearest_refuge_path(
+                    world_model.road_graph,
+                    agent_node_id,
+                    world_model.refuge_ids,
+                )
+                if refuge_path:
+                    no_refuge_counter = 0
+                    refuge_node = refuge_path[-1]
+                    ref_attrs = world_model.road_graph.nodes.get(refuge_node, {})
+                    ref_x = ref_attrs.get("x", 0)
+                    ref_y = ref_attrs.get("y", 0)
+                    dist_to_refuge = math.hypot(ref_x - agent_state.position.x, ref_y - agent_state.position.y)
+
+                    if agent_node_id == refuge_node or dist_to_refuge < 5000:
+                        client.send_unload(packet.tick)
+
+                        logger.info(
+                            "Я отправил AKUnload в убежище refuge_id=%d, такт=%d",
+                            refuge_node, packet.tick,
+                        )
+
+                        current_target_id = None
+                        is_transporting_memory = False
+                        agent_state.resources.is_transporting = False
+                    else:
+                        client.send_move(packet.tick, refuge_path, dest_x=ref_x, dest_y=ref_y)
+
+                        logger.info(
+                            "Я везу гражданского к убежищу refuge_id=%d, такт=%d",
+                            refuge_node, packet.tick,
+                        )
+
+                        current_target_id = None
+                        is_transporting_memory = True
+                else:
+                    no_refuge_counter += 1
+                    if no_refuge_counter >= NO_REFUGE_MAX_RETRIES:
+                        # Я сбрасываю режим перевозки, чтобы агент не зависал навечно
+                        logger.error(
+                            "Я сбрасываю is_transporting после %d неудачных попыток найти убежище, такт=%d",
+                            no_refuge_counter, packet.tick,
+                        )
+                        is_transporting_memory = False
+                        agent_state.resources.is_transporting = False
+                        no_refuge_counter = 0
+                    else:
+                        logger.warning(
+                            "Я не нашёл убежища для выгрузки гражданского (попытка %d/%d), такт=%d",
+                            no_refuge_counter, NO_REFUGE_MAX_RETRIES, packet.tick,
+                        )
+                    client.send_rest(packet.tick)
+
+                continue
+
+            allowed_types = dispatcher._allowed_entity_types(agent_type)
             type_relevant = [
-                e for e in world_model.tasks.values() if e.type == allowed_type
+                e for e in world_model.tasks.values() if e.type in allowed_types
             ]
             fill_path_distances(
                 world_model.road_graph,
@@ -415,7 +483,9 @@ def main() -> None:
                 logger.info(
                     "ДИАГ [%s] такт=%d: кэш=%d задач, type_relevant(%s)=%d",
                     agent_type.value, packet.tick,
-                    len(world_model.tasks), allowed_type.value, len(type_relevant),
+                    len(world_model.tasks),
+                    ",".join(t.value for t in sorted(allowed_types, key=lambda t: t.value)),
+                    len(type_relevant),
                 )
 
                 if type_relevant and agent_type == AgentType.FIRE_BRIGADE:
@@ -528,39 +598,7 @@ def main() -> None:
             current_target_id = selected_target_id
 
             try:
-                if agent_state.resources.is_transporting:
-                    refuge_path = nearest_refuge_path(
-                        world_model.road_graph,
-                        agent_node_id,
-                        world_model.refuge_ids,
-                    )
-
-                    if refuge_path:
-                        refuge_node = refuge_path[-1]
-                        ref_attrs = world_model.road_graph.nodes.get(refuge_node, {})
-                        ref_x = ref_attrs.get("x", 0)
-                        ref_y = ref_attrs.get("y", 0)
-                        
-                        dist_to_refuge = math.hypot(ref_x - agent_state.position.x, ref_y - agent_state.position.y)
-                        
-                        if dist_to_refuge < 5000:
-                            client.send_unload(packet.tick)
-                            logger.info(
-                                "Я отправил AKUnload в убежище refuge_id=%d, такт=%d",
-                                refuge_node, packet.tick,
-                            )
-                            current_target_id = None
-                            is_transporting_memory = False
-                        else:
-                            client.send_move(packet.tick, refuge_path, dest_x=ref_x, dest_y=ref_y)
-                            logger.info(
-                                "Я везу гражданского к убежищу refuge_id=%d, такт=%d",
-                                refuge_node, packet.tick,
-                            )
-                    else:
-                        client.send_rest(packet.tick)
-                        logger.warning("Я не нашёл убежища для выгрузки гражданского, такт=%d", packet.tick)
-                elif current_target_id is None:
+                if current_target_id is None:
                     rw_path = _random_walk(world_model.road_graph, agent_node_id, visited=visited_nodes)
                     if len(rw_path) > 1:
                         client.send_move(packet.tick, rw_path)

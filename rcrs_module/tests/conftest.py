@@ -45,6 +45,9 @@ def make_agent(
     entity_id: int = 1,
     water: int = 5000,
     transporting: bool = False,
+    hp: int | None = None,
+    damage: int | None = None,
+    buriedness: int | None = None,
 ) -> AgentState:
     """Я создаю AgentState с заданными параметрами для тестов."""
     return AgentState(
@@ -52,6 +55,9 @@ def make_agent(
         type=agent_type,
         position=Position(entity_id=entity_id, x=x, y=y),
         resources=Resources(water_quantity=water, is_transporting=transporting),
+        hp=hp,
+        damage=damage,
+        buriedness=buriedness,
     )
 
 
@@ -117,6 +123,33 @@ def make_blockade(
         computed_metrics=ComputedMetrics(
             path_distance=path_distance,
             estimated_death_time=9999,
+            total_area=0,
+        ),
+        utility_score=0.0,
+    )
+
+
+def make_human(
+    entity_id: int = 40,
+    hp: int = 10000,
+    damage: int = 0,
+    buriedness: int = 10,
+    path_distance: float = 100.0,
+    estimated_death_time: int = 500,
+) -> VisibleEntity:
+    """Я создаю VisibleEntity для завалённого спасателя."""
+    return VisibleEntity(
+        id=entity_id,
+        type=EntityType.HUMAN,
+        raw_sensor_data=RawSensorData(
+            hp=hp,
+            damage=damage,
+            buriedness=buriedness,
+            position_on_edge=entity_id,
+        ),
+        computed_metrics=ComputedMetrics(
+            path_distance=path_distance,
+            estimated_death_time=estimated_death_time,
             total_area=0,
         ),
         utility_score=0.0,

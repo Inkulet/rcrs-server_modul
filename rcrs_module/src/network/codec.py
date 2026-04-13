@@ -118,6 +118,12 @@ _ENTITY_URN_TO_AGENT_TYPE: dict[int, AgentType] = {
     ENT_POLICE_OFFICE:   AgentType.POLICE_OFFICE,
 }
 
+_RESCUABLE_AGENT_URNS: frozenset[int] = frozenset({
+    ENT_FIRE_BRIGADE,
+    ENT_AMBULANCE_TEAM,
+    ENT_POLICE_FORCE,
+})
+
 _ENTITY_URN_TO_ENTITY_TYPE: dict[int, EntityType] = {
     ENT_CIVILIAN:         EntityType.CIVILIAN,
     ENT_BUILDING:         EntityType.BUILDING,
@@ -391,6 +397,9 @@ def parse_ka_sense(
     own_position = prev_position if prev_position is not None else Position(entity_id=0, x=0, y=0)
     own_water    = prev_water
     own_transporting = prev_transporting
+    own_hp: int | None = None
+    own_damage: int | None = None
+    own_buriedness: int | None = None
     own_found    = False
 
     visible_entities: list[VisibleEntity] = []
@@ -410,6 +419,12 @@ def parse_ka_sense(
                 pos_id = _defined_int_val(props, PROP_POSITION, own_position.entity_id)
                 own_position = Position(entity_id=pos_id, x=x, y=y)
                 own_water    = _defined_int_val(props, PROP_WATER_QUANTITY, own_water)
+                hp = _defined_int_val(props, PROP_HP, -1)
+                damage = _defined_int_val(props, PROP_DAMAGE, -1)
+                buriedness = _defined_int_val(props, PROP_BURIEDNESS, -1)
+                own_hp = None if hp < 0 else hp
+                own_damage = None if damage < 0 else damage
+                own_buriedness = None if buriedness < 0 else buriedness
                 own_found    = True
                 continue
 
@@ -419,13 +434,40 @@ def parse_ka_sense(
                 y      = _defined_int_val(props, PROP_Y, 0)
                 pos_id = _defined_int_val(props, PROP_POSITION, 0)
                 water  = _defined_int_val(props, PROP_WATER_QUANTITY, 0)
+                hp     = _defined_int_val(props, PROP_HP, -1)
+                damage = _defined_int_val(props, PROP_DAMAGE, -1)
+                buriedness = _defined_int_val(props, PROP_BURIEDNESS, -1)
                 ally = AgentState(
                     id=eid,
                     type=ally_agent_type,
                     position=Position(entity_id=pos_id, x=x, y=y),
                     resources=Resources(water_quantity=water, is_transporting=False),
+                    hp=None if hp < 0 else hp,
+                    damage=None if damage < 0 else damage,
+                    buriedness=None if buriedness < 0 else buriedness,
                 )
                 ally_states.append(ally)
+
+                if eurn in _RESCUABLE_AGENT_URNS:
+                    raw = RawSensorData(
+                        hp=None if hp < 0 else hp,
+                        damage=None if damage < 0 else damage,
+                        buriedness=None if buriedness < 0 else buriedness,
+                        position_on_edge=pos_id,
+                    )
+                    visible_entities.append(VisibleEntity(
+                        id=eid,
+                        type=EntityType.HUMAN,
+                        raw_sensor_data=raw,
+                        computed_metrics=ComputedMetrics(
+                            path_distance=0.0,
+                            estimated_death_time=estimate_death_time(raw),
+                            total_area=0,
+                        ),
+                        utility_score=0.0,
+                        entity_x=x,
+                        entity_y=y,
+                    ))
                 continue
 
             entity_type = _ENTITY_URN_TO_ENTITY_TYPE.get(eurn)
@@ -490,6 +532,9 @@ def parse_ka_sense(
         type=agent_type,
         position=own_position,
         resources=Resources(water_quantity=own_water, is_transporting=own_transporting),
+        hp=own_hp,
+        damage=own_damage,
+        buriedness=own_buriedness,
     )
 
     deleted_ids: list[int] = []
