@@ -49,10 +49,25 @@ class WorldModel:
 
         return self.agents.get(agent_id)
 
-    def get_task(self, entity_id: int) -> Optional[VisibleEntity]:
-        """Здесь я возвращаю задачу по идентификатору сущности, если она известна."""
+    def get_nearest_node(self, x: int, y: int) -> int:
+        """Здесь я нахожу ближайший узел графа к координатам (x, y).
 
-        return self.tasks.get(entity_id)
+        Я использую этот метод, если агент находится на дороге (ребре),
+        чтобы корректно построить путь к убежищу через ближайший узел.
+        """
+        import math
+
+        best_node = -1
+        min_dist = float("inf")
+
+        for node_id, attrs in self.road_graph.nodes(data=True):
+            nx, ny = attrs.get("x", 0), attrs.get("y", 0)
+            dist = math.hypot(nx - x, ny - y)
+            if dist < min_dist:
+                min_dist = dist
+                best_node = node_id
+
+        return best_node
 
     def build_graph_from_map(
         self,

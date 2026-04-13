@@ -427,6 +427,8 @@ def main() -> None:
     selector    = TargetSelector(c_switch=0.1)
 
     current_target_id: int | None = None
+    # Я добавляю память для статуса транспортировки (см. комментарии в цикле).
+    is_transporting_memory: bool = False
 
     # Я храню множество посещённых узлов графа между тактами, чтобы random walk
     # приоритетно выбирал непосещённые районы карты и агенты не ходили по кругу.
@@ -492,6 +494,14 @@ def main() -> None:
             # Я использую собственное состояние из пакета — оно всегда актуально.
             agent_state   = packet.own_state
             agent_node_id = agent_state.position.entity_id
+
+            # Я сохраняю статус транспортировки между тактами, если ядро перестало
+            # присылать этот флаг в дельта-обновлениях.
+            if agent_state.resources.is_transporting:
+                is_transporting_memory = True
+            
+            # Я принудительно перезаписываю статус в модели агента для текущего такта.
+            agent_state.resources.is_transporting = is_transporting_memory
 
             # Я запоминаю текущую позицию агента, чтобы random walk
             # приоритетно исследовал новые районы карты.
@@ -654,36 +664,49 @@ def main() -> None:
             # --- Шаг 7: Отправка типизированной команды (Action, UC-7) ---
             try:
                 if agent_state.resources.is_transporting:
-                    # Я везу гражданского — нужно добраться до ближайшего убежища и выгрузить.
-                    # pre_filter уже вернул [] при is_transporting=True, поэтому current_target
-                    # мог стать None — обрабатываю транспортировку здесь явно.
+                    # Я определяю узел навигации из координат агента, так как
+                    # agent_node_id может указывать на ребро, а алгоритм pathfinding
+                    # ожидает узел графа.
+                    nav_start_node = world_model.get_nearest_node(
+                        agent_state.position.x,
+                        agent_state.position.y
+                    )
+                    
                     refuge_path = nearest_refuge_path(
                         world_model.road_graph,
-                        agent_node_id,
+                        nav_start_node,
                         world_model.refuge_ids,
                     )
                     if refuge_path:
-                        if agent_node_id == refuge_path[-1]:
+                        # Я проверяю евклидово расстояние до убежища — сравнение
+                        # node_id не работает, если агент находится на ребре.
+                        refuge_node = refuge_path[-1]
+                        ref_attrs = world_model.road_graph.nodes.get(refuge_node, {})
+                        ref_x = ref_attrs.get("x", 0)
+                        ref_y = ref_attrs.get("y", 0)
+                        
+                        # Использую порог 5000 мм (5 метров) для определения "в убежище".
+                        dist_to_refuge = math.hypot(ref_x - agent_state.position.x, ref_y - agent_state.position.y)
+                        
+                        if dist_to_refuge < 5000:
                             # Я нахожусь в убежище — выгружаю гражданского.
                             client.send_unload(packet.tick)
                             logger.info(
                                 "Я отправил AKUnload в убежище refuge_id=%d, такт=%d",
-                                refuge_path[-1], packet.tick,
+                                refuge_node, packet.tick,
                             )
                             # Я сбрасываю цель: после выгрузки начинаю поиск новой задачи.
                             current_target_id = None
+                            # Я сбрасываю память после успешной выгрузки!
+                            is_transporting_memory = False
                         else:
                             # Я передаю координаты убежища как dest_x/dest_y для
                             # плавного перемещения — ядро направит агента к точке,
                             # а не только до центра промежуточного узла графа.
-                            refuge_node = refuge_path[-1]
-                            ref_attrs = world_model.road_graph.nodes.get(refuge_node, {})
-                            ref_x = ref_attrs.get("x", -1)
-                            ref_y = ref_attrs.get("y", -1)
                             client.send_move(packet.tick, refuge_path, dest_x=ref_x, dest_y=ref_y)
                             logger.info(
                                 "Я везу гражданского к убежищу refuge_id=%d, такт=%d",
-                                refuge_path[-1], packet.tick,
+                                refuge_node, packet.tick,
                             )
                     else:
                         client.send_rest(packet.tick)
