@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-"""В этом модуле я реализую выбор целевой задачи с гистерезисом."""
-
 import logging
 
 
@@ -9,10 +7,8 @@ logger = logging.getLogger(__name__)
 
 
 class TargetSelector:
-    """В этом классе я реализую механизм гистерезиса для выбора цели."""
 
     def __init__(self, c_switch: float = 0.1) -> None:
-        """Здесь я задаю порог переключения C_switch для устойчивого выбора."""
 
         self.c_switch = c_switch
 
@@ -21,7 +17,6 @@ class TargetSelector:
         current_target_id: int | None,
         utilities_dict: dict[int, float],
     ) -> int | None:
-        """Здесь я выбираю цель по максимуму полезности с учетом гистерезиса."""
 
         if not utilities_dict:
             logger.info("Я не получил доступных задач и возвращаю режим ожидания")

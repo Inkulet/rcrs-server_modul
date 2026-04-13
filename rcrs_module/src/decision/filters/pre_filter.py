@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-"""В этом модуле я реализую предварительную фильтрацию задач (UC-2)."""
-
 import logging
 from typing import Iterable, List
 
@@ -16,15 +14,7 @@ class NeedRefugeException(RuntimeError):
 
 
 class PreFilterDispatcher:
-    """В этом классе я реализую предварительную фильтрацию задач до расчетов полезности."""
-
     def __init__(self, work_rate: float = 1.0, average_speed: float = 70_000.0) -> None:
-        """Здесь я задаю скорость работ и скорость движения для оценки временных ограничений.
-
-        average_speed — скорость агента в мм/такт, используется для конвертации
-        path_distance (мм) в t_travel (такты) при проверке дедлайна.
-        work_rate — скорость разбора завалов в единицах/такт.
-        """
         if work_rate <= 0:
             raise ValueError("Я ожидаю положительный work_rate для расчета дедлайнов")
         if average_speed <= 0:
@@ -33,27 +23,13 @@ class PreFilterDispatcher:
         self.average_speed = average_speed
 
     def _allowed_entity_type(self, agent_type: AgentType) -> EntityType:
-        """Здесь я возвращаю тип сущностей, релевантный для данного типа агента.
-
-        Я использую сопоставление типов, чтобы FIRE_BRIGADE работал только со зданиями,
-        AMBULANCE_TEAM — только с гражданскими, POLICE_FORCE — только с завалами.
-        Это предотвращает передачу нерелевантных задач в расчёт полезности.
-        """
         if agent_type == AgentType.FIRE_BRIGADE:
             return EntityType.BUILDING
         if agent_type == AgentType.AMBULANCE_TEAM:
             return EntityType.CIVILIAN
-        # Я возвращаю BLOCKADE для полиции — это единственный оставшийся тип агента.
         return EntityType.BLOCKADE
 
     def filter_tasks(self, agent_state: AgentState, tasks: Iterable[VisibleEntity]) -> List[VisibleEntity]:
-        """В этом методе я применяю правила UC-2 и возвращаю релевантные задачи.
-
-        Контракт: аргумент tasks должен содержать сущности с уже заполненным
-        computed_metrics.path_distance — т.е. после вызова fill_path_distances()
-        из слоя навигации (action/navigation.py). Без этого дедлайн-проверка
-        использует path_distance=0.0, что делает фильтрацию по TTL бессмысленной.
-        """
 
         try:
             if agent_state.resources.is_transporting:
@@ -70,8 +46,6 @@ class PreFilterDispatcher:
                 )
                 raise NeedRefugeException("Я обнаружил, что у пожарного нет воды")
 
-            # Я фильтрую сущности по допустимому типу для данного агента —
-            # это исключает нерелевантные задачи до основного цикла и снижает M.
             allowed_type = self._allowed_entity_type(agent_state.type)
             tasks_list = list(tasks)
             tasks = [e for e in tasks_list if e.type == allowed_type]
@@ -100,20 +74,15 @@ class PreFilterDispatcher:
             return []
 
     def _is_relevant(self, entity: VisibleEntity) -> bool:
-        """Здесь я применяю правила отсева для одной сущности."""
-
         if entity.type == EntityType.CIVILIAN:
             hp = entity.raw_sensor_data.hp
             damage = entity.raw_sensor_data.damage
             buriedness = entity.raw_sensor_data.buriedness
 
-            # Я фильтрую подтверждённо погибших: hp=0 — фактическая смерть.
             if hp is not None and hp == 0:
                 logger.debug("Я исключаю погибшего гражданского: entity_id=%s", entity.id)
                 return False
 
-            # Я исключаю здоровых гражданских: damage=0 И buriedness=0 подтверждает,
-            # что гражданский не нуждается в помощи.
             if damage == 0 and buriedness == 0:
                 logger.debug(
                     "Я исключаю здорового гражданского без завала: entity_id=%s",
@@ -121,10 +90,6 @@ class PreFilterDispatcher:
                 )
                 return False
 
-            # Я исключаю гражданских с полностью неизвестным состоянием:
-            # damage=None И buriedness=None означает, что мы не знаем, нужна ли
-            # помощь. Отправлять медика к такому гражданскому — трата времени,
-            # аналогично отправке пожарного к зданию с fieryness=None.
             if damage is None and buriedness is None:
                 logger.debug(
                     "Я исключаю гражданского с неизвестным состоянием: entity_id=%s",
@@ -134,12 +99,6 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            # Я допускаю ТОЛЬКО подтверждённо горящие здания (fieryness ∈ {1, 2, 3}).
-            # fieryness=0 — здание не горит, тушить нечего.
-            # fieryness ∈ {4..8} — здание сгорело или потушено, тушить бессмысленно.
-            # fieryness=None — статус неизвестен; ранее я допускал такие здания,
-            # но это приводило к бесполезным перемещениям к негорящим зданиям,
-            # пока пожарный мог бы найти реальный пожар через random walk.
             if fieryness not in {1, 2, 3}:
                 logger.debug(
                     "Я исключаю здание: fieryness=%s не в {1,2,3}: entity_id=%s",
@@ -150,8 +109,6 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.BLOCKADE:
             repair_cost = entity.raw_sensor_data.repair_cost
-            # Я исключаю завалы с repair_cost=0 (полностью расчищены, но ещё
-            # не удалены ядром из ChangeSet) и repair_cost=None (неизвестный статус).
             if repair_cost is None or repair_cost == 0:
                 logger.debug(
                     "Я исключаю завал: repair_cost=%s: entity_id=%s",
@@ -163,8 +120,6 @@ class PreFilterDispatcher:
             if self.work_rate <= 0:
                 raise ValueError("Я получил неположительную скорость работ")
 
-            # Я привожу path_distance (мм) к тактам через average_speed (мм/такт),
-            # чтобы сложение с t_work (такты) было корректным — нельзя смешивать единицы.
             try:
                 t_travel = entity.computed_metrics.path_distance / self.average_speed
             except ZeroDivisionError:

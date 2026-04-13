@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-"""В этом модуле я вычисляю геометрический фактор расстояния для функции полезности."""
 
 import logging
 from typing import Optional
@@ -12,9 +11,6 @@ from world.entities import Position
 
 logger = logging.getLogger(__name__)
 
-# Я задаю максимальную дистанцию по дорожному графу в мм.
-# Значение совпадает с MAX_MAP_DISTANCE в action/navigation.py:
-# типичная карта RCRS — несколько км, 100 000 км — безопасный потолок нормировки.
 MAX_MAP_DISTANCE: float = 100_000_000.0
 
 
@@ -23,7 +19,6 @@ def _safe_shortest_path_length(
     source_id: int,
     target_id: int,
 ) -> Optional[float]:
-    """Здесь я безопасно считаю длину кратчайшего пути с учетом весов ребер."""
 
     try:
         return float(nx.shortest_path_length(graph, source_id, target_id, weight="weight"))
@@ -45,14 +40,6 @@ def distance_factor(
     target_position: Position,
     max_map_distance: float = MAX_MAP_DISTANCE,
 ) -> float:
-    """Здесь я вычисляю f_dist запуская Дейкстра на каждый вызов — только для тестов.
-
-    ВНИМАНИЕ: эта функция запускает полный Dijkstra за O(N log N) на каждый вызов.
-    В производственном цикле по M задачам получается O(M · N log N) — недопустимо.
-    В aggregator.py я использую distance_factor_precomputed(), которая работает
-    за O(1) по предвычисленным данным fill_path_distances(). Эта функция предназначена
-    исключительно для unit-тестов и разовых расчётов вне главного цикла.
-    """
 
     if max_map_distance <= 0:
         logger.warning("Я получил неположительную MaxMapDistance, поэтому возвращаю штраф 1.0")
@@ -63,6 +50,7 @@ def distance_factor(
         agent_position.entity_id,
         target_position.entity_id,
     )
+
     if distance is None:
         return 1.0
 
@@ -82,12 +70,6 @@ def distance_factor_precomputed(
     path_distance: float,
     max_map_distance: float = MAX_MAP_DISTANCE,
 ) -> float:
-    """Здесь я нормирую уже вычисленную дистанцию в фактор f_dist ∈ [0, 1].
-
-    Я использую эту функцию в aggregator.py вместо повторного запуска Dijkstra:
-    fill_path_distances() уже заполнил entity.computed_metrics.path_distance
-    перед вызовом агрегатора, поэтому повторный запрос к графу избыточен (O(2·M·logN)).
-    """
     if max_map_distance <= 0:
         logger.warning("Я получил неположительную MaxMapDistance, возвращаю штраф 1.0")
         return 1.0
@@ -102,8 +84,4 @@ def distance_factor_precomputed(
         logger.warning("Я поймал деление на ноль при нормировке предвычисленной дистанции")
         return 1.0
 
-
-# distance_factor намеренно исключён из __all__: он запускает Dijkstra за O(N log N)
-# на каждый вызов и не должен использоваться в производственном цикле полезности.
-# Используйте distance_factor_precomputed() в aggregator.py.
 __all__ = ["MAX_MAP_DISTANCE", "distance_factor_precomputed"]

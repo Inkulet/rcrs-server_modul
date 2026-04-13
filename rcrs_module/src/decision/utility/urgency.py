@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-"""В этом модуле я рассчитываю фактор срочности для функции полезности."""
 
 import logging
 from typing import Optional
@@ -16,9 +15,6 @@ T_MAX: float = 1000.0
 EPSILON: float = 1e-6
 STABLE_URGENCY: float = 0.01
 
-# Я задаю максимальный TTL гражданского для нормировки f_urgency в [0, 1].
-# T_MAX_TTL = max_HP / min_damage = 10 000 HP / 1 урон/такт = 10 000 тактов.
-# Это гарантирует, что urgency_for_ambulance всегда возвращает значение в [0, 1].
 T_MAX_TTL: float = 10_000.0
 
 
@@ -29,33 +25,25 @@ def urgency_for_ambulance(
     stable_value: float = STABLE_URGENCY,
     t_max_ttl: float = T_MAX_TTL,
 ) -> float:
-    """Здесь я рассчитываю срочность для медиков по TTL и времени прибытия.
-
-    Формула: urgency = 1 - TTL / T_MAX_TTL, нормировка в [0, 1].
-    - Малый TTL (умирает быстро) → urgency близко к 1 (высокая срочность).
-    - Большой TTL (жить долго) → urgency близко к 0 (низкая срочность).
-    - Если не успеем (ttl ≤ t_travel + t_work) → 0.0 (задача уже нерелевантна,
-      её должен был отфильтровать pre_filter).
-    - Если damage=0 (стабильный гражданский) → возвращаю STABLE_URGENCY.
-    """
     try:
         hp = entity.raw_sensor_data.hp
         damage = entity.raw_sensor_data.damage
         if hp is None or damage is None:
             logger.warning("Я не могу вычислить TTL без hp и damage для entity_id=%s", entity.id)
             return 0.0
+
         if t_travel < 0 or t_work < 0:
             logger.warning("Я получил отрицательное время пути или работы для entity_id=%s", entity.id)
             return 0.0
+
         if damage <= 0:
             return _clamp_to_unit(stable_value)
 
         ttl = hp / damage
+
         if ttl <= t_travel + t_work:
             return 0.0
 
-        # Я нормирую: urgency = 1 - ttl/T_MAX_TTL → результат строго в [0, 1].
-        # Старая формула 1/ttl давала диапазон [0.001, 0.2] — несоразмерно с другими факторами.
         return _clamp_to_unit(1.0 - ttl / t_max_ttl)
     except ZeroDivisionError:
         logger.warning("Я поймал деление на ноль при расчете срочности для entity_id=%s", entity.id)
@@ -63,8 +51,6 @@ def urgency_for_ambulance(
 
 
 def urgency_for_fire(entity: VisibleEntity, t_max: float = T_MAX) -> float:
-    """Здесь я рассчитываю срочность для пожарных по температуре и стадии горения."""
-
     try:
         temperature = entity.raw_sensor_data.temperature
         fieryness = entity.raw_sensor_data.fieryness
@@ -80,16 +66,9 @@ def urgency_for_fire(entity: VisibleEntity, t_max: float = T_MAX) -> float:
 
 
 def urgency_for_police(task_distance: float, epsilon: float = EPSILON) -> float:
-    """Здесь я рассчитываю срочность для полиции по расстоянию до конкретной задачи.
-
-    Я принимаю расстояние до конкретного завала (task_distance), а не глобальный
-    минимум по всем задачам. Это позволяет каждой задаче получать свою нормировку:
-    ближние завалы получают более высокую срочность, дальние — более низкую.
-    Формула: urgency = clamp(1 / (task_distance + epsilon)) → результат в [0, 1].
-    """
-
     try:
         return _clamp_to_unit(1.0 / (task_distance + epsilon))
+
     except ZeroDivisionError:
         logger.warning("Я поймал деление на ноль при расчете срочности для полиции")
         return 0.0
@@ -105,7 +84,6 @@ def compute_urgency(
     epsilon: float = EPSILON,
     stable_value: float = STABLE_URGENCY,
 ) -> float:
-    """Здесь я объединяю вычисление срочности и маршрутизирую по типу агента."""
 
     try:
         if agent_state.type == AgentType.AMBULANCE_TEAM:

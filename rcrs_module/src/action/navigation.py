@@ -1,13 +1,5 @@
 from __future__ import annotations
 
-"""В этом модуле я реализую навигацию агента по дорожному графу (UC-6).
-
-Я вычисляю кратчайшие пути алгоритмом A* через NetworkX и обновляю
-поле path_distance у всех видимых сущностей до расчёта полезности.
-Это позволяет f_dist опираться на реальное расстояние по дорогам,
-а не на эвклидово приближение.
-"""
-
 import logging
 
 import networkx as nx
@@ -24,12 +16,6 @@ def compute_path(
     from_id: int,
     to_id: int,
 ) -> list[int]:
-    """Здесь я вычисляю кратчайший путь в графе между двумя узлами.
-
-    Я использую встроенный алгоритм A* NetworkX с весом «weight» на рёбрах.
-    Если путь не найден (узел отсутствует или граф несвязный), возвращаю
-    пустой список — вызывающий код должен трактовать это как «не достижимо».
-    """
     if from_id == to_id:
         return [from_id]
 
@@ -50,13 +36,6 @@ def compute_path_distance(
     from_id: int,
     to_id: int,
 ) -> float:
-    """Здесь я вычисляю дистанцию кратчайшего пути между двумя узлами.
-
-    Я использую Dijkstra из NetworkX — он работает на C-бэкенде и
-    обеспечивает O(M log N) сложность вместо полного A* с эвристикой.
-    При недостижимости возвращаю MAX_MAP_DISTANCE как безопасный дефолт:
-    это гарантирует, что f_dist = 1.0 и агент не выберет такую цель.
-    """
     if from_id == to_id:
         return 0.0
 
@@ -79,22 +58,6 @@ def fill_path_distances(
     agent_node_id: int,
     entities: list[VisibleEntity],
 ) -> list[VisibleEntity]:
-    """Здесь я обновляю path_distance у каждой сущности перед расчётом полезности.
-
-    Я запускаю ОДИН вызов Dijkstra из позиции агента, получая словарь
-    {node_id: distance} для ВСЕХ узлов графа за O(N log N + E).
-    Затем я обновляю path_distance у каждой сущности за O(1) по словарю —
-    итого O(N log N + E + M) вместо O(M·N log N) при N вызовах Dijkstra.
-
-    Для сущностей вне графа (завалы, гражданские) я использую position_on_edge
-    (ID дороги/здания, где находится сущность) как навигационный узел.
-
-    Я обновляю path_distance in-place (мутирую computed_metrics напрямую),
-    чтобы избежать O(M) глубоких копий Pydantic-моделей на каждый такт.
-    На крупных картах (3000-5000 сущностей) это критически важно для
-    соблюдения бюджета времени ≤1000 мс.
-    """
-    # Я получаю все дистанции из позиции агента одним вызовом Dijkstra.
     try:
         dist_map: dict[int, float] = nx.single_source_dijkstra_path_length(
             graph, agent_node_id, weight="weight"
@@ -106,8 +69,6 @@ def fill_path_distances(
         dist_map = {}
 
     for entity in entities:
-        # Я определяю навигационный узел: для сущностей не в графе
-        # (гражданские, завалы) использую position_on_edge — дорогу/здание, где они находятся.
         nav_id = entity.id
         if nav_id not in dist_map:
             pos = entity.raw_sensor_data.position_on_edge
@@ -115,8 +76,6 @@ def fill_path_distances(
                 nav_id = pos
 
         distance = dist_map.get(nav_id, MAX_MAP_DISTANCE)
-        # Я обновляю path_distance in-place — Pydantic с validate_assignment=True
-        # валидирует значение, но не создаёт новый объект.
         entity.computed_metrics.path_distance = distance
         logger.debug(
             "Я обновил path_distance для entity_id=%d (nav_id=%d): %.1f мм",
@@ -130,13 +89,6 @@ def nearest_refuge_path(
     from_id: int,
     refuge_ids: list[int],
 ) -> list[int]:
-    """Здесь я нахожу ближайшее убежище и возвращаю путь к нему.
-
-    Я вычисляю путь для каждого убежища ровно один раз и определяю длину
-    суммированием весов рёбер — без повторного запуска Dijkstra для победителя.
-    Это вызывается только при NeedRefugeException — не в основном цикле.
-    Если убежищ нет или ни одно не достижимо, возвращаю пустой список.
-    """
     if not refuge_ids:
         logger.warning("Я не знаю ни одного убежища — невозможно построить маршрут")
         return []
@@ -148,7 +100,6 @@ def nearest_refuge_path(
         path = compute_path(graph, from_id, refuge_id)
         if not path:
             continue
-        # Я вычисляю длину найденного пути суммой весов рёбер — избегаю повторного Dijkstra.
         dist = sum(
             graph[u][v].get("weight", 1.0)
             for u, v in zip(path, path[1:])

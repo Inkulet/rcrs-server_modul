@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-"""В этом модуле я описываю базовые структуры данных состояния агентов и сущностей."""
 
 import logging
 from enum import Enum
@@ -13,42 +12,25 @@ logger = logging.getLogger(__name__)
 
 
 class AgentType(str, Enum):
-    """В этом перечислении я фиксирую типы агентов симуляции.
-
-    Я разделяю агентов на два класса:
-    - Полевые (platoon): FIRE_BRIGADE, AMBULANCE_TEAM, POLICE_FORCE — перемещаются
-      по карте и выполняют целевые действия (тушение, спасение, расчистка).
-    - Центральные (center): FIRE_STATION, AMBULANCE_CENTRE, POLICE_OFFICE —
-      стационарные объекты, ретранслирующие сообщения между агентами по каналам связи.
-    """
-
     FIRE_BRIGADE = "FIRE_BRIGADE"
     AMBULANCE_TEAM = "AMBULANCE_TEAM"
     POLICE_FORCE = "POLICE_FORCE"
-    # Я добавляю центральные типы агентов: scenario.xml содержит 1 firestation,
-    # 1 ambulancecentre, 1 policeoffice — ядро ожидает контроллеры для них.
     FIRE_STATION = "FIRE_STATION"
     AMBULANCE_CENTRE = "AMBULANCE_CENTRE"
     POLICE_OFFICE = "POLICE_OFFICE"
 
 
 class EntityType(str, Enum):
-    """В этом перечислении я фиксирую типы наблюдаемых сущностей."""
-
     BUILDING = "BUILDING"
     CIVILIAN = "CIVILIAN"
     BLOCKADE = "BLOCKADE"
 
 
 class BaseEntityModel(BaseModel):
-    """В этом базовом классе я задаю строгую типизацию и единую обработку ошибок."""
-
     model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
 
     @classmethod
     def parse(cls, data: object) -> Optional[Self]:
-        """Здесь я валидирую входные данные и явно логирую ошибки парсинга."""
-
         try:
             return cls.model_validate(data)
         except ValidationError as exc:
@@ -57,23 +39,17 @@ class BaseEntityModel(BaseModel):
 
 
 class Position(BaseEntityModel):
-    """В этом классе я описываю положение сущности на карте."""
-
     entity_id: StrictInt = Field(..., ge=0)
     x: StrictInt
     y: StrictInt
 
 
 class Resources(BaseEntityModel):
-    """В этом классе я описываю ключевые ресурсы агента."""
-
     water_quantity: StrictInt = Field(..., ge=0)
     is_transporting: StrictBool
 
 
 class AgentState(BaseEntityModel):
-    """В этом классе я описываю состояние агента в момент времени."""
-
     id: StrictInt = Field(..., ge=0)
     type: AgentType
     position: Position
@@ -81,14 +57,10 @@ class AgentState(BaseEntityModel):
 
 
 class RawSensorData(BaseEntityModel):
-    """В этом классе я храню сырые сенсорные параметры, которые могут быть неизвестны."""
-
     hp: Optional[StrictInt] = Field(default=None, ge=0)
     damage: Optional[StrictInt] = Field(default=None, ge=0)
     buriedness: Optional[StrictInt] = Field(default=None, ge=0)
     temperature: Optional[StrictFloat] = Field(default=None)
-    # Я разрешаю 0: в RCRS fieryness=0 означает «здание не горит» и является валидным.
-    # Исходное ограничение ge=1 вызывало ValidationError при парсинге нетронутых зданий.
     fieryness: Optional[StrictInt] = Field(default=None, ge=0, le=8)
     floors: Optional[StrictInt] = Field(default=None, ge=0)
     ground_area: Optional[StrictInt] = Field(default=None, ge=0)
@@ -97,78 +69,49 @@ class RawSensorData(BaseEntityModel):
 
 
 class ComputedMetrics(BaseEntityModel):
-    """В этом классе я описываю вычисленные метрики для принятия решений."""
-
     path_distance: StrictFloat = Field(..., ge=0)
     estimated_death_time: StrictInt
     total_area: StrictInt = Field(..., ge=0)
 
 
 class VisibleEntity(BaseEntityModel):
-    """В этом классе я описываю наблюдаемую сущность в мире."""
-
     id: StrictInt = Field(..., ge=0)
     type: EntityType
     raw_sensor_data: RawSensorData
     computed_metrics: ComputedMetrics
     utility_score: StrictFloat
-    # Я храню координаты сущности на карте (мм) для евклидовых проверок расстояния.
-    # Для завалов и гражданских это позволяет вычислить реальное расстояние до цели,
-    # а не использовать координаты центра дороги из графа.
     entity_x: Optional[StrictInt] = Field(default=None)
     entity_y: Optional[StrictInt] = Field(default=None)
 
 
 class MapNode(BaseEntityModel):
-    """В этом классе я описываю вершину дорожного графа G=(V,E): здание или перекрёсток."""
-
     entity_id: StrictInt = Field(..., ge=0)
     x: StrictInt
     y: StrictInt
 
 
 class MapEdge(BaseEntityModel):
-    """В этом классе я описываю ребро дорожного графа: дорогу с длиной weight."""
-
-    # Я храню длину ребра как вес, чтобы алгоритм Дейкстры возвращал реальное расстояние.
     source_id: StrictInt = Field(..., ge=0)
     target_id: StrictInt = Field(..., ge=0)
     weight: StrictFloat = Field(..., gt=0)
 
 
 class PerceptionPacket(BaseEntityModel):
-    """В этом классе я объединяю все данные одного такта восприятия в единую структуру.
-
-    Я разделяю данные на пять групп:
-    - own_state        — актуальное состояние самого агента (позиция, ресурсы);
-    - visible_entities — наблюдаемые объекты (здания, гражданские, завалы);
-    - ally_states      — наблюдаемые/слышимые союзники (для f_social);
-    - map_nodes/edges  — топология карты, которую ядро присылает один раз при старте;
-    - refuge_ids       — идентификаторы убежищ (для маршрута при NeedRefugeException).
-    """
-
     tick: StrictInt = Field(..., ge=0)
     own_state: AgentState
     visible_entities: List[VisibleEntity] = Field(default_factory=list)
     ally_states: List[AgentState] = Field(default_factory=list)
-    # Я заполняю map_nodes, map_edges и refuge_ids только на первом такте.
+
     map_nodes: List[MapNode] = Field(default_factory=list)
     map_edges: List[MapEdge] = Field(default_factory=list)
     refuge_ids: List[StrictInt] = Field(default_factory=list)
-    # Я передаю список удалённых ядром сущностей (ChangeSet.deletes), чтобы
-    # WorldModel мог очистить кэш — например, расчищенный завал должен исчезнуть.
+
     deleted_entity_ids: List[StrictInt] = Field(default_factory=list)
-    # Я передаю множество target_id, услышанных от соседних агентов через AKSay.
-    # Это позволяет учитывать координацию: задачи, уже занятые другими агентами,
-    # получают штраф в функции полезности, предотвращая дублирование работы.
+
     heard_target_ids: set[int] = Field(default_factory=set)
 
 
 def estimate_death_time(raw: RawSensorData) -> int:
-    """Я оцениваю TTL из HP/damage для заполнения ComputedMetrics.estimated_death_time.
-
-    Если данных недостаточно — я возвращаю большое число (задача без дедлайна).
-    """
     hp = raw.hp
     damage = raw.damage
     if hp is None or damage is None or damage <= 0:
@@ -180,7 +123,6 @@ def estimate_death_time(raw: RawSensorData) -> int:
 
 
 def compute_total_area(raw: RawSensorData) -> int:
-    """Я вычисляю TotalArea = GroundArea × Floors для здания."""
     ga = raw.ground_area
     fl = raw.floors
     if ga is None or fl is None:
@@ -189,14 +131,10 @@ def compute_total_area(raw: RawSensorData) -> int:
 
 
 def parse_agent_state(data: object) -> Optional[AgentState]:
-    """Здесь я даю удобную обертку для безопасного парсинга состояния агента."""
-
     return AgentState.parse(data)
 
 
 def parse_visible_entity(data: object) -> Optional[VisibleEntity]:
-    """Здесь я даю удобную обертку для безопасного парсинга наблюдаемой сущности."""
-
     return VisibleEntity.parse(data)
 
 

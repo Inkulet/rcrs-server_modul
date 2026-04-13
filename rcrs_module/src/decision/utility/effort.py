@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-"""В этом модуле я рассчитываю фактор трудоемкости для функции полезности."""
 
 import logging
 from typing import Optional
@@ -18,7 +17,6 @@ MAX_REPAIR_COST: float = 100000.0
 
 
 def effort_for_ambulance(entity: VisibleEntity, max_buriedness: float = MAX_BURIEDNESS) -> float:
-    """Здесь я рассчитываю трудоемкость для медиков по глубине завала."""
 
     try:
         buriedness = entity.raw_sensor_data.buriedness
@@ -32,7 +30,6 @@ def effort_for_ambulance(entity: VisibleEntity, max_buriedness: float = MAX_BURI
 
 
 def effort_for_fire(entity: VisibleEntity, max_total_area: float = MAX_TOTAL_AREA) -> float:
-    """Здесь я рассчитываю трудоемкость для пожарных по площади здания."""
 
     try:
         ground_area = entity.raw_sensor_data.ground_area
@@ -48,7 +45,6 @@ def effort_for_fire(entity: VisibleEntity, max_total_area: float = MAX_TOTAL_ARE
 
 
 def effort_for_police(entity: VisibleEntity, max_repair_cost: float = MAX_REPAIR_COST) -> float:
-    """Здесь я рассчитываю трудоемкость для полиции по стоимости расчистки."""
 
     try:
         repair_cost = entity.raw_sensor_data.repair_cost
@@ -68,7 +64,6 @@ def compute_effort(
     max_total_area: float = MAX_TOTAL_AREA,
     max_repair_cost: float = MAX_REPAIR_COST,
 ) -> float:
-    """Здесь я объединяю вычисление трудоемкости и маршрутизирую по типу агента."""
 
     try:
         if entity is None:
