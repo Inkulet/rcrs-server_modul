@@ -11,14 +11,11 @@ logger = logging.getLogger(__name__)
 
 ESTIMATED_TRIP_TO_REFUGE: float = 20.0
 
-# Я считаю цель недостижимой, если вычисленное расстояние превышает 90% MAX_MAP_DISTANCE.
-# Это отсеивает задачи, до которых нет пути в графе (fill_path_distances возвращает MAX_MAP_DISTANCE),
-# например, гражданских в здании с заваленным входом на тупиковой ветке.
 UNREACHABLE_DISTANCE_THRESHOLD: float = MAX_MAP_DISTANCE * 0.9
 
 
 class NeedRefugeException(RuntimeError):
-    """В этом исключении я сигнализирую, что пожарному нужно направиться в убежище."""
+    """пожарному нужно направиться в убежище."""
 
 
 class PreFilterDispatcher:
@@ -123,8 +120,6 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            # Я атакую здания на стадиях нагрева (1-3) и активного горения (4-6).
-            # Fieryness 0 = не горит, 7 = инферно (бесполезно тушить), 8 = пепел.
             if fieryness is not None and fieryness not in {1, 2, 3, 4, 5, 6}:
                 logger.debug(
                     "Я исключаю здание: fieryness=%s не в {1..6}: entity_id=%s",
@@ -142,8 +137,6 @@ class PreFilterDispatcher:
                 )
                 return False
 
-        # Я отсеиваю цели без графового пути: fill_path_distances вернул MAX_MAP_DISTANCE.
-        # Обычно это значит, что до цели нет прохода — нет смысла гонять туда агента.
         if entity.computed_metrics.path_distance >= UNREACHABLE_DISTANCE_THRESHOLD:
             logger.info(
                 "Я исключаю недостижимую цель entity_id=%s: path_distance=%.0f ≥ %.0f (нет прохода)",

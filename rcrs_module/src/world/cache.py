@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Dict, Iterable, Optional
 
 import networkx as nx
@@ -38,20 +39,21 @@ class WorldModel:
     def get_agent(self, agent_id: int) -> Optional[AgentState]:
         return self.agents.get(agent_id)
 
+    def get_task(self, entity_id: int) -> Optional[VisibleEntity]:
+        return self.tasks.get(entity_id)
+
     def get_nearest_node(self, x: int, y: int) -> int:
-        import math
+        from action.navigation import find_nearest_node
+        result = find_nearest_node(self.road_graph, x, y)
+        return result if result is not None else -1
 
-        best_node = -1
-        min_dist = float("inf")
-
-        for node_id, attrs in self.road_graph.nodes(data=True):
-            nx, ny = attrs.get("x", 0), attrs.get("y", 0)
-            dist = math.hypot(nx - x, ny - y)
-            if dist < min_dist:
-                min_dist = dist
-                best_node = node_id
-
-        return best_node
+    def remove_task(self, entity_id: int) -> None:
+        if entity_id in self.tasks:
+            del self.tasks[entity_id]
+            self.last_seen_tick.pop(entity_id, None)
+            logger.info("Я удалил задачу entity_id=%d из кэша через remove_task", entity_id)
+        else:
+            logger.debug("Я пропустил remove_task: entity_id=%d не в кэше", entity_id)
 
     def build_graph_from_map(
         self,
