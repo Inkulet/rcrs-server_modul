@@ -111,9 +111,12 @@ class TestMockSendCommands:
 
     def test_send_load_mock(self, mock_client: RCRSClient) -> None:
         mock_client.send_load(time=1, target_id=10)
+        assert mock_client._prev_transporting is True
 
     def test_send_unload_mock(self, mock_client: RCRSClient) -> None:
+        mock_client._prev_transporting = True
         mock_client.send_unload(time=1)
+        assert mock_client._prev_transporting is False
 
     def test_send_rest_mock(self, mock_client: RCRSClient) -> None:
         mock_client.send_rest(time=1)

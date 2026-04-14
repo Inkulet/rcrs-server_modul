@@ -231,6 +231,7 @@ class RCRSClient:
 
     def send_load(self, time: int, target_id: int) -> None:
         self._send_command(build_ak_load(self._agent_id, time, target_id))
+        self._prev_transporting = True
         logger.info("Я отправил AKLoad: time=%d, target=%d", time, target_id)
 
     def send_unload(self, time: int) -> None:

@@ -129,6 +129,7 @@ class TestEnumsAndModels:
 
     def test_entity_types(self) -> None:
         assert EntityType.CIVILIAN.value == "CIVILIAN"
+        assert EntityType.HUMAN.value == "HUMAN"
         assert EntityType.BUILDING.value == "BUILDING"
         assert EntityType.BLOCKADE.value == "BLOCKADE"
 

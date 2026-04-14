@@ -10,7 +10,7 @@ import pytest
 from decision.filters.pre_filter import NeedRefugeException, PreFilterDispatcher
 from world.entities import AgentType
 
-from conftest import make_agent, make_blockade, make_building, make_civilian
+from conftest import make_agent, make_blockade, make_building, make_civilian, make_human
 
 
 def make_dispatcher(work_rate: float = 1.0, average_speed: float = 1.0) -> PreFilterDispatcher:
@@ -61,6 +61,20 @@ class TestCivilianFiltering:
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert entity in result
 
+    def test_buried_agent_kept_for_ambulance(self) -> None:
+        """Я проверяю: завалённый спасатель — релевантная задача для скорой."""
+        agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
+        entity = make_human(hp=10000, damage=0, buriedness=5, estimated_death_time=9999)
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert entity in result
+
+    def test_unburied_agent_filtered_for_ambulance(self) -> None:
+        """Я проверяю: незавалённого спасателя скорая не выбирает как задачу."""
+        agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
+        entity = make_human(hp=9000, damage=50, buriedness=0, estimated_death_time=9999)
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert result == []
+
 
 # ===========================================================================
 # Тесты правил фильтрации для зданий
@@ -70,17 +84,17 @@ class TestCivilianFiltering:
 class TestBuildingFiltering:
     """Я проверяю правила отсева зданий по fieryness из диплома."""
 
-    @pytest.mark.parametrize("fieryness", [4, 5, 6, 7, 8])
+    @pytest.mark.parametrize("fieryness", [7, 8])
     def test_burned_building_filtered(self, fieryness: int) -> None:
-        """Я проверяю: fieryness ∈ {4..8} → здание потушено/сгорело → отсеивается."""
+        """Я проверяю: fieryness ∈ {7,8} → инферно/пепел → бессмысленно тушить → отсеивается."""
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE)
         entity = make_building(fieryness=fieryness)
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert result == []
 
-    @pytest.mark.parametrize("fieryness", [1, 2, 3])
+    @pytest.mark.parametrize("fieryness", [1, 2, 3, 4, 5, 6])
     def test_active_fire_kept(self, fieryness: int) -> None:
-        """Я проверяю: fieryness ∈ {1,2,3} → активный пожар → проходит фильтр."""
+        """Я проверяю: fieryness ∈ {1..6} → нагрев или горение → проходит фильтр."""
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE)
         entity = make_building(fieryness=fieryness)
         result = make_dispatcher().filter_tasks(agent, [entity])
