@@ -198,18 +198,13 @@ def run_field_agent(
 
             try:
                 if current_target_id is None:
-                    _explore(
-                        client, packet, agent_state, agent_node_id,
-                        world_model, visited_nodes,
-                        exploration_target_node, exploration_start_tick,
-                    )
                     exploration_target_node, exploration_start_tick = _explore_and_update(
                         client, packet, agent_state, agent_node_id,
                         world_model, visited_nodes,
                         exploration_target_node, exploration_start_tick,
                     )
                 else:
-                    target_valid, unreachable = dispatch_action(
+                    target_valid, unreachable, working = dispatch_action(
                         client=client,
                         agent_type=agent_type,
                         agent_state=agent_state,
@@ -225,6 +220,8 @@ def run_field_agent(
                     elif not target_valid:
                         world_model.remove_task(current_target_id)
                         current_target_id = None
+                        selector.reset_stuck()
+                    elif working:
                         selector.reset_stuck()
 
             except (ConnectionError, OSError) as exc:
@@ -345,9 +342,6 @@ def _explore_and_update(
             logger.warning("Я не могу исследовать — тупик node=%d, такт=%d", agent_node_id, pkt.tick)
 
     return exploration_target_node, exploration_start_tick
-
-def _explore(*args: object, **kwargs: object) -> None:
-    pass
 
 
 __all__ = ["run_field_agent"]
