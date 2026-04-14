@@ -8,6 +8,8 @@ from world.entities import AgentState, AgentType, EntityType, VisibleEntity
 
 logger = logging.getLogger(__name__)
 
+ESTIMATED_TRIP_TO_REFUGE: float = 20.0
+
 
 class NeedRefugeException(RuntimeError):
     """В этом исключении я сигнализирую, что пожарному нужно направиться в убежище."""
@@ -115,9 +117,11 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            if fieryness is not None and fieryness not in {1, 2, 3}:
+            # Я атакую здания на стадиях нагрева (1-3) и активного горения (4-6).
+            # Fieryness 0 = не горит, 7 = инферно (бесполезно тушить), 8 = пепел.
+            if fieryness is not None and fieryness not in {1, 2, 3, 4, 5, 6}:
                 logger.debug(
-                    "Я исключаю здание: fieryness=%s не в {1,2,3}: entity_id=%s",
+                    "Я исключаю здание: fieryness=%s не в {1..6}: entity_id=%s",
                     fieryness,
                     entity.id,
                 )
@@ -144,13 +148,16 @@ class PreFilterDispatcher:
             time_to_action = t_travel + (
                 entity.raw_sensor_data.buriedness / self.work_rate
             )
-            if entity.computed_metrics.estimated_death_time < time_to_action:
+            if entity.computed_metrics.estimated_death_time < (
+                time_to_action + ESTIMATED_TRIP_TO_REFUGE
+            ):
                 logger.debug(
-                    "Я исключаю задачу из-за дедлайна: entity_id=%s, "
-                    "estimated_death=%d, time_to_action=%.1f",
+                    "Я исключаю обреченного (не довезет живым): entity_id=%s, "
+                    "estimated_death=%d, time_to_action=%.1f, trip_to_refuge=%.1f",
                     entity.id,
                     entity.computed_metrics.estimated_death_time,
                     time_to_action,
+                    ESTIMATED_TRIP_TO_REFUGE,
                 )
                 return False
 

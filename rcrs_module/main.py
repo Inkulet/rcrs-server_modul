@@ -45,8 +45,14 @@ DEFAULT_AGENT_NAME: str = "diploma-agent"
 # Параметры модели полезности
 AVERAGE_SPEED: float = 70_000.0
 SOCIAL_RADIUS: float = 30_000.0
-MAX_WATER_DISCHARGE: int = 10_000
+# Я ограничиваю напор водой до лимита сервера resq-fire.max_extinguish_power_sum=3000
+# Значение выше отклоняется ExtinguishRequest.validate() с REASON_TO_MUCH_WATER
+MAX_WATER_DISCHARGE: int = 3_000
 FIRE_EXTINGUISH_MAX_DISTANCE: float = 30_000.0
+# Я беру порог `at_target` строго по серверному `clear.repair.distance=10000`
+# из kobe/config/clear.cfg — это дистанция от агента до РЕБРА завала,
+# при которой ClearSimulator.isValid принимает AKClear. Расчёт веду до центра,
+# поэтому оставляю запас: для крупных завалов центр > 10000 даже когда ребро < 10000.
 POLICE_CLEAR_MAX_DISTANCE: float = 10_000.0
 
 # Длина случайного маршрута (количество узлов графа)
@@ -209,8 +215,6 @@ def _dispatch_action(
 
                 world_model.tasks.pop(target_id, None)
 
-                agent_state.resources.is_transporting = True
-
                 logger.info("Я отправил AKLoad: target_id=%d, tick=%d", target_id, tick)
                 return False
 
@@ -223,10 +227,35 @@ def _dispatch_action(
             logger.info("Я отправил AKExtinguish: target_id=%d, tick=%d", target_id, tick)
 
         elif agent_type == AgentType.POLICE_FORCE:
-            client.send_clear_area(tick, tx, ty)
-            logger.info("Я отправил AKClearArea: dest=(%d,%d), tick=%d", tx, ty, tick)
-            world_model.tasks.pop(target_id, None)
-            return False
+            # Я использую AKClear(target_id) вместо AKClearArea: серверный
+            # ClearSimulator точно снимает clear.repair.rate с конкретного завала
+            # по ID и удаляет сущность, когда rate >= repair_cost. Это точнее и
+            # эффективнее геометрического AKClearArea, который тратит бюджет
+            # очистки на всю видимую область.
+            #
+            # Цель НЕ удаляю из кэша: пусть завал остаётся активной задачей,
+            # пока сервер не сообщит repair_cost == 0 (отсеется pre_filter) или
+            # не удалит сущность (исчезнет из world_model.tasks при обновлении).
+            if entity is None:
+                # Я страхуюсь от гонки: сервер мог удалить завал (он расчищен
+                # другим полицейским), а мы ещё не получили обновление. Без
+                # этой проверки сервер отверг бы AKClear с "target does not
+                # exist" и полиция простаивала бы такт.
+                logger.info(
+                    "Я пропускаю AKClear: завал target_id=%d пропал из кэша "
+                    "(вероятно расчищен), tick=%d",
+                    target_id, tick,
+                )
+                client.send_rest(tick)
+                return False
+
+            client.send_clear(tick, target_id)
+            logger.info(
+                "Я отправил AKClear: target_id=%d, dest=(%d,%d), "
+                "repair_cost=%s, tick=%d",
+                target_id, tx, ty,
+                entity.raw_sensor_data.repair_cost, tick,
+            )
 
     else:
         dest_x: int = tx
@@ -320,8 +349,7 @@ def main() -> None:
 
     current_target_id: int | None = None
 
-    is_transporting_memory: bool = False
-    # Я считаю неудачные попытки найти убежище, чтобы не зависнуть навечно
+    # Я считаю неудачные попытки найти убежище, чтобы не спамить одинаковой ошибкой каждый такт
     NO_REFUGE_MAX_RETRIES: int = 5
     no_refuge_counter: int = 0
 
@@ -375,10 +403,6 @@ def main() -> None:
 
             agent_state   = packet.own_state
             agent_node_id = agent_state.position.entity_id
-            agent_state.resources.is_transporting = (
-                agent_state.resources.is_transporting or is_transporting_memory
-            )
-
             visited_nodes.add(agent_node_id)
 
             if agent_node_id == 0:
@@ -398,11 +422,16 @@ def main() -> None:
 
             if agent_state.buriedness is not None and agent_state.buriedness > 0:
                 logger.info(
-                    "Я не могу двигаться: агент завален buriedness=%d, такт=%d",
+                    "Я завален и зову на помощь! buriedness=%d, такт=%d",
                     agent_state.buriedness,
                     packet.tick,
                 )
                 client.send_rest(packet.tick)
+                try:
+                    say_data = struct.pack(">i", agent_state.id)
+                    client.send_say(packet.tick, say_data)
+                except (ConnectionError, OSError, struct.error) as exc:
+                    logger.warning("Не смог крикнуть о помощи: %s", exc)
                 current_target_id = None
                 continue
 
@@ -426,9 +455,7 @@ def main() -> None:
                     ref_attrs = world_model.road_graph.nodes.get(refuge_node, {})
                     ref_x = ref_attrs.get("x", 0)
                     ref_y = ref_attrs.get("y", 0)
-                    dist_to_refuge = math.hypot(ref_x - agent_state.position.x, ref_y - agent_state.position.y)
-
-                    if agent_node_id == refuge_node or dist_to_refuge < 5000:
+                    if agent_node_id == refuge_node:
                         client.send_unload(packet.tick)
 
                         logger.info(
@@ -437,8 +464,6 @@ def main() -> None:
                         )
 
                         current_target_id = None
-                        is_transporting_memory = False
-                        agent_state.resources.is_transporting = False
                     else:
                         client.send_move(packet.tick, refuge_path, dest_x=ref_x, dest_y=ref_y)
 
@@ -448,17 +473,13 @@ def main() -> None:
                         )
 
                         current_target_id = None
-                        is_transporting_memory = True
                 else:
                     no_refuge_counter += 1
                     if no_refuge_counter >= NO_REFUGE_MAX_RETRIES:
-                        # Я сбрасываю режим перевозки, чтобы агент не зависал навечно
                         logger.error(
-                            "Я сбрасываю is_transporting после %d неудачных попыток найти убежище, такт=%d",
+                            "Я %d тактов подряд не могу найти убежище для выгрузки, такт=%d",
                             no_refuge_counter, packet.tick,
                         )
-                        is_transporting_memory = False
-                        agent_state.resources.is_transporting = False
                         no_refuge_counter = 0
                     else:
                         logger.warning(
@@ -471,7 +492,9 @@ def main() -> None:
 
             allowed_types = dispatcher._allowed_entity_types(agent_type)
             type_relevant = [
-                e for e in world_model.tasks.values() if e.type in allowed_types
+                e for e in world_model.tasks.values()
+                if e.type in allowed_types
+                and e.raw_sensor_data.position_on_edge not in world_model.refuge_ids
             ]
             fill_path_distances(
                 world_model.road_graph,
@@ -622,9 +645,6 @@ def main() -> None:
                         agent_node_id=agent_node_id,
                         world_model=world_model,
                     )
-
-                    if agent_state.resources.is_transporting:
-                        is_transporting_memory = True
 
                     if not target_valid:
                         if current_target_id is not None:
