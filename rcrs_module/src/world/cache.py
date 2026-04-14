@@ -13,13 +13,6 @@ from .entities import (
 
 logger = logging.getLogger(__name__)
 
-# Я держу завал в кэше не более этого числа тактов без его появления в
-# visible_entities. Сервер StandardPerception.java:236-247 обновляет
-# road.blockades и свойства блокад, но НЕ посылает entityDeleted в перцепции
-# агента — когда ClearSimulator полностью расчищает завал, Python никогда не
-# получает явного сигнала удаления. Если 3 такта подряд сервер не присылает
-# свойств для блокады, считаю что он её удалил (или я вышел из зоны видимости,
-# тогда при возврате завал появится заново в update_perception).
 _BLOCKADE_STALE_TICKS: int = 3
 
 
@@ -27,9 +20,6 @@ class WorldModel:
     def __init__(self) -> None:
         self.agents: Dict[int, AgentState] = {}
         self.tasks: Dict[int, VisibleEntity] = {}
-        # Я храню номер такта, на котором каждая сущность последний раз пришла
-        # в visible_entities. Это единственный надёжный сигнал "сервер удалил
-        # завал" — явного entityDeleted в перцепции нет.
         self.last_seen_tick: Dict[int, int] = {}
         self.road_graph: nx.Graph = nx.Graph()
 
@@ -108,17 +98,9 @@ class WorldModel:
 
         self.update_perception(packet.visible_entities)
 
-        # Я фиксирую «этого увидел на такте N» для каждой пришедшей сущности.
-        # Трекинг нужен только для выявления «тихих» удалений завалов ниже.
         for entity in packet.visible_entities:
             self.last_seen_tick[entity.id] = packet.tick
 
-        # Я удаляю завалы, которых сервер не присылал _BLOCKADE_STALE_TICKS
-        # тактов подряд — значит ClearSimulator их полностью расчистил
-        # (model.removeEntity), но нам он об этом не сообщает явно (см. комментарий
-        # у константы). Если я просто вышел из зоны видимости, завал появится
-        # снова при возвращении. Для других типов (civilian/human/building)
-        # чистку не делаю — их надо помнить для пересечения зон видимости.
         stale_threshold = packet.tick - _BLOCKADE_STALE_TICKS
         stale_blockades = [
             eid for eid, entity in self.tasks.items()

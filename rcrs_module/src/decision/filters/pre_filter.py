@@ -3,12 +3,18 @@ from __future__ import annotations
 import logging
 from typing import Iterable, List
 
+from decision.utility.distance import MAX_MAP_DISTANCE
 from world.entities import AgentState, AgentType, EntityType, VisibleEntity
 
 
 logger = logging.getLogger(__name__)
 
 ESTIMATED_TRIP_TO_REFUGE: float = 20.0
+
+# Я считаю цель недостижимой, если вычисленное расстояние превышает 90% MAX_MAP_DISTANCE.
+# Это отсеивает задачи, до которых нет пути в графе (fill_path_distances возвращает MAX_MAP_DISTANCE),
+# например, гражданских в здании с заваленным входом на тупиковой ветке.
+UNREACHABLE_DISTANCE_THRESHOLD: float = MAX_MAP_DISTANCE * 0.9
 
 
 class NeedRefugeException(RuntimeError):
@@ -135,6 +141,17 @@ class PreFilterDispatcher:
                     repair_cost, entity.id,
                 )
                 return False
+
+        # Я отсеиваю цели без графового пути: fill_path_distances вернул MAX_MAP_DISTANCE.
+        # Обычно это значит, что до цели нет прохода — нет смысла гонять туда агента.
+        if entity.computed_metrics.path_distance >= UNREACHABLE_DISTANCE_THRESHOLD:
+            logger.info(
+                "Я исключаю недостижимую цель entity_id=%s: path_distance=%.0f ≥ %.0f (нет прохода)",
+                entity.id,
+                entity.computed_metrics.path_distance,
+                UNREACHABLE_DISTANCE_THRESHOLD,
+            )
+            return False
 
         if entity.raw_sensor_data.buriedness is not None:
             if self.work_rate <= 0:

@@ -15,7 +15,13 @@ SRC_PATH = Path(__file__).resolve().parent / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from action.navigation import compute_path, fill_path_distances, nearest_refuge_path  # noqa: E402
+from action.navigation import (  # noqa: E402
+    compute_path,
+    fill_path_distances,
+    nearest_refuge_path,
+    pick_exploration_target,
+    plan_exploration_path,
+)
 from action.selection import TargetSelector  # noqa: E402
 from decision.filters.pre_filter import NeedRefugeException, PreFilterDispatcher  # noqa: E402
 from decision.utility.aggregator import UtilityAggregator  # noqa: E402
@@ -45,21 +51,29 @@ DEFAULT_AGENT_NAME: str = "diploma-agent"
 # Параметры модели полезности
 AVERAGE_SPEED: float = 70_000.0
 SOCIAL_RADIUS: float = 30_000.0
-# Я ограничиваю напор водой до лимита сервера resq-fire.max_extinguish_power_sum=3000
-# Значение выше отклоняется ExtinguishRequest.validate() с REASON_TO_MUCH_WATER
 MAX_WATER_DISCHARGE: int = 3_000
 FIRE_EXTINGUISH_MAX_DISTANCE: float = 30_000.0
-# Я беру порог `at_target` строго по серверному `clear.repair.distance=10000`
-# из kobe/config/clear.cfg — это дистанция от агента до РЕБРА завала,
-# при которой ClearSimulator.isValid принимает AKClear. Расчёт веду до центра,
-# поэтому оставляю запас: для крупных завалов центр > 10000 даже когда ребро < 10000.
 POLICE_CLEAR_MAX_DISTANCE: float = 10_000.0
 
-# Длина случайного маршрута (количество узлов графа)
+# Длина случайного маршрута (количество узлов графа) — оставляю для отладочного fallback.
 RANDOM_WALK_LENGTH: int = 50
+
+# Длина маршрута исследования — сколько узлов агент отсылает ядру за раз.
+# Ядро пересчитывает движение каждый такт, поэтому длинные маршруты избыточны.
+EXPLORATION_PATH_LENGTH: int = 40
 
 # Штраф координации
 CLAIMED_TARGET_PENALTY: float = 0.3
+
+# Я объявляю цель «застрявшей», если агент провёл возле неё STUCK_TICKS тактов без
+# продвижения по графу. Причина — вероятнее всего завал на подходе: блокируем цель
+# на STUCK_BLACKLIST_TICKS, чтобы не гонять агента в тупик.
+STUCK_TICKS: int = 8
+STUCK_BLACKLIST_TICKS: int = 60
+
+# Если compute_path вернул пустой список — путь вообще не строится; я блокирую цель
+# на меньший срок: возможно, граф ещё дополнится или полиция расчистит дорогу.
+UNREACHABLE_BLACKLIST_TICKS: int = 30
 
 # Глобальный флаг остановки
 _shutdown_requested: bool = False
@@ -125,8 +139,22 @@ def _get_nav_node(target_id: int, world_model: WorldModel) -> int | None:
 
     if world_model.road_graph.has_node(target_id):
         return target_id
+
+    if entity is not None and entity.entity_x is not None and entity.entity_y is not None:
+        best_node = None
+        best_dist = float('inf')
+        for node_id, data in world_model.road_graph.nodes(data=True):
+            nx = data.get("x", 0)
+            ny = data.get("y", 0)
+            dist = math.hypot(entity.entity_x - nx, entity.entity_y - ny)
+            if dist < best_dist:
+                best_dist = dist
+                best_node = node_id
+        if best_node is not None:
+            return best_node
+
     logger.warning(
-        "Я не нашёл узла графа для target_id=%d (position_on_edge тоже не в графе)", target_id,
+        "Я не нашёл узла графа для target_id=%d (position_on_edge тоже не в графе и координаты отсутствуют)", target_id,
     )
     return None
 
@@ -139,7 +167,10 @@ def _dispatch_action(
     target_id: int,
     agent_node_id: int,
     world_model: WorldModel,
-) -> bool:
+) -> tuple[bool, bool]:
+    # Я возвращаю кортеж (target_valid, unreachable). target_valid=False означает,
+    # что цель надо сбросить; unreachable=True — цель недостижима (нет пути в графе),
+    # и её имеет смысл занести в чёрный список, чтобы не выбирать снова.
     nav_node_id = _get_nav_node(target_id, world_model)
 
     if nav_node_id is None:
@@ -147,7 +178,7 @@ def _dispatch_action(
             "Я не нашёл узла графа для target_id=%d, сбрасываю цель", target_id,
         )
         client.send_rest(tick)
-        return False
+        return False, True
 
     path = compute_path(world_model.road_graph, agent_node_id, nav_node_id)
 
@@ -157,7 +188,7 @@ def _dispatch_action(
             target_id, nav_node_id,
         )
         client.send_rest(tick)
-        return False
+        return False, True
 
     entity = world_model.tasks.get(target_id)
     tx: int = 0
@@ -192,7 +223,7 @@ def _dispatch_action(
                 )
 
                 client.send_rest(tick)
-                return False
+                return False, False
 
             buriedness = entity.raw_sensor_data.buriedness
 
@@ -209,14 +240,14 @@ def _dispatch_action(
                         "Я снял цель с агента target_id=%d: союзник уже откопан, tick=%d",
                         target_id, tick,
                     )
-                    return False
+                    return False, False
 
                 client.send_load(tick, target_id)
 
                 world_model.tasks.pop(target_id, None)
 
                 logger.info("Я отправил AKLoad: target_id=%d, tick=%d", target_id, tick)
-                return False
+                return False, False
 
             else:
                 client.send_rescue(tick, target_id)
@@ -227,27 +258,14 @@ def _dispatch_action(
             logger.info("Я отправил AKExtinguish: target_id=%d, tick=%d", target_id, tick)
 
         elif agent_type == AgentType.POLICE_FORCE:
-            # Я использую AKClear(target_id) вместо AKClearArea: серверный
-            # ClearSimulator точно снимает clear.repair.rate с конкретного завала
-            # по ID и удаляет сущность, когда rate >= repair_cost. Это точнее и
-            # эффективнее геометрического AKClearArea, который тратит бюджет
-            # очистки на всю видимую область.
-            #
-            # Цель НЕ удаляю из кэша: пусть завал остаётся активной задачей,
-            # пока сервер не сообщит repair_cost == 0 (отсеется pre_filter) или
-            # не удалит сущность (исчезнет из world_model.tasks при обновлении).
             if entity is None:
-                # Я страхуюсь от гонки: сервер мог удалить завал (он расчищен
-                # другим полицейским), а мы ещё не получили обновление. Без
-                # этой проверки сервер отверг бы AKClear с "target does not
-                # exist" и полиция простаивала бы такт.
                 logger.info(
                     "Я пропускаю AKClear: завал target_id=%d пропал из кэша "
                     "(вероятно расчищен), tick=%d",
                     target_id, tick,
                 )
                 client.send_rest(tick)
-                return False
+                return False, False
 
             client.send_clear(tick, target_id)
             logger.info(
@@ -278,6 +296,22 @@ def _dispatch_action(
                         pos_edge, dest_x, dest_y,
                     )
 
+        # Если полиция стоит на графе в нужной вершине, но евклидово далеко от завала
+        # (например, завал в середине длинной дороги), AKMove с путём из одного узла
+        # ничего не даст. Я пытаюсь расчистить зоной по координатам — у AKClearArea
+        # больше шансов дотянуться, чем у стоячего AKMove.
+        if (
+            agent_type == AgentType.POLICE_FORCE
+            and len(path) <= 1
+            and entity is not None
+        ):
+            client.send_clear_area(tick, dest_x=dest_x, dest_y=dest_y)
+            logger.info(
+                "Я застрял у завала target_id=%d на узле=%d и отправил AKClearArea dest=(%d,%d), tick=%d",
+                target_id, agent_node_id, dest_x, dest_y, tick,
+            )
+            return True, False
+
         client.send_move(tick, path, dest_x=dest_x, dest_y=dest_y)
 
         logger.debug(
@@ -285,7 +319,7 @@ def _dispatch_action(
             nav_node_id, len(path), dest_x, dest_y,
         )
 
-    return True
+    return True, False
 
 
 _CENTER_AGENT_TYPES: frozenset[AgentType] = frozenset({
@@ -354,6 +388,21 @@ def main() -> None:
     no_refuge_counter: int = 0
 
     visited_nodes: set[int] = set()
+
+    # Я храню цель исследования между тактами: агент идёт к дальнему узлу карты и
+    # только при достижении (или длительном застое) выбирает новую. Это разводит
+    # агентов по разным районам, вместо того чтобы каждый такт случайно ходить по соседям.
+    exploration_target_node: int | None = None
+    exploration_start_tick: int = 0
+    EXPLORATION_MAX_TICKS: int = 80  # Я меняю цель, если за это время до неё не дошёл — например, путь заблокирован.
+
+    # Я отслеживаю прогресс к активной цели, чтобы занести «непроходимые» цели в чёрный список.
+    stuck_target_id: int | None = None
+    stuck_start_node: int | None = None
+    stuck_counter: int = 0
+
+    # target_id -> tick, до которого игнорируем цель (в чёрном списке).
+    blacklisted_until: dict[int, int] = {}
 
     MAX_CONNECT_RETRIES: int = 20
     for attempt in range(1, MAX_CONNECT_RETRIES + 1):
@@ -544,10 +593,22 @@ def main() -> None:
                     agent_type.value, packet.tick, len(filtered_tasks),
                 )
 
+            # Я чищу чёрный список от устаревших записей — блокировка имеет ограниченный срок.
+            expired = [eid for eid, until in blacklisted_until.items() if until <= packet.tick]
+            for eid in expired:
+                blacklisted_until.pop(eid, None)
+                logger.info("Я снял блокировку с target_id=%d на такте %d", eid, packet.tick)
+
             utilities: dict[int, float] = {}
             if filtered_tasks:
 
                 for entity in filtered_tasks:
+                    if entity.id in blacklisted_until:
+                        logger.debug(
+                            "Я пропускаю target_id=%d: цель в чёрном списке до такта %d",
+                            entity.id, blacklisted_until[entity.id],
+                        )
+                        continue
                     try:
                         t_travel = entity.computed_metrics.path_distance / AVERAGE_SPEED
 
@@ -620,23 +681,78 @@ def main() -> None:
 
             current_target_id = selected_target_id
 
+            # Я обновляю трекер застоя: если цель сменилась или агент продвинулся
+            # по графу, сбрасываю счётчик; иначе считаю такты без прогресса.
+            if current_target_id != stuck_target_id:
+                stuck_target_id = current_target_id
+                stuck_start_node = agent_node_id
+                stuck_counter = 0
+            elif current_target_id is not None:
+                if stuck_start_node != agent_node_id:
+                    stuck_start_node = agent_node_id
+                    stuck_counter = 0
+                else:
+                    stuck_counter += 1
+
             try:
                 if current_target_id is None:
-                    rw_path = _random_walk(world_model.road_graph, agent_node_id, visited=visited_nodes)
-                    if len(rw_path) > 1:
-                        client.send_move(packet.tick, rw_path)
+                    # Я выбираю цель исследования один раз и иду к ней несколько тактов —
+                    # так агенты расходятся по разным районам карты, а не кружат у дома.
+                    need_new_target = (
+                        exploration_target_node is None
+                        or exploration_target_node == agent_node_id
+                        or not world_model.road_graph.has_node(exploration_target_node)
+                        or (packet.tick - exploration_start_tick) >= EXPLORATION_MAX_TICKS
+                    )
+                    if need_new_target:
+                        # Я использую id агента как сид, чтобы разные агенты выбирали разные направления.
+                        rng = random.Random(agent_state.id * 1_000_003 + packet.tick)
+                        exploration_target_node = pick_exploration_target(
+                            world_model.road_graph,
+                            agent_node_id,
+                            visited=visited_nodes,
+                            rng=rng,
+                        )
+                        exploration_start_tick = packet.tick
+                        if exploration_target_node is not None:
+                            logger.info(
+                                "Я выбрал новую цель исследования node=%d (из узла=%d), такт=%d",
+                                exploration_target_node, agent_node_id, packet.tick,
+                            )
+
+                    exp_path: list[int] = []
+                    if exploration_target_node is not None:
+                        exp_path = plan_exploration_path(
+                            world_model.road_graph,
+                            agent_node_id,
+                            exploration_target_node,
+                            max_steps=EXPLORATION_PATH_LENGTH,
+                        )
+
+                    if exp_path and len(exp_path) > 1:
+                        client.send_move(packet.tick, exp_path)
                         logger.info(
-                            "Я исследую карту random walk: %d узлов, такт=%d",
-                            len(rw_path), packet.tick,
+                            "Я иду к цели исследования node=%d: %d шагов, такт=%d",
+                            exploration_target_node, len(exp_path), packet.tick,
                         )
                     else:
-                        client.send_rest(packet.tick)
-                        logger.warning(
-                            "Я не могу исследовать карту — тупик node=%d, такт=%d",
-                            agent_node_id, packet.tick,
-                        )
+                        # Я откатываюсь к random walk, если не смог построить путь к далёкой цели.
+                        exploration_target_node = None
+                        rw_path = _random_walk(world_model.road_graph, agent_node_id, visited=visited_nodes)
+                        if len(rw_path) > 1:
+                            client.send_move(packet.tick, rw_path)
+                            logger.info(
+                                "Я исследую карту random walk: %d узлов, такт=%d",
+                                len(rw_path), packet.tick,
+                            )
+                        else:
+                            client.send_rest(packet.tick)
+                            logger.warning(
+                                "Я не могу исследовать карту — тупик node=%d, такт=%d",
+                                agent_node_id, packet.tick,
+                            )
                 else:
-                    target_valid = _dispatch_action(
+                    target_valid, unreachable = _dispatch_action(
                         client=client,
                         agent_type=agent_type,
                         agent_state=agent_state,
@@ -646,10 +762,33 @@ def main() -> None:
                         world_model=world_model,
                     )
 
-                    if not target_valid:
+                    # Я заношу цель в чёрный список, если агент застрял рядом с ней без прогресса.
+                    # Скорее всего путь физически блокирован (завал у входа в здание).
+                    if target_valid and stuck_counter >= STUCK_TICKS:
+                        logger.warning(
+                            "Я застрял у target_id=%d на узле=%d %d тактов — заношу в чёрный список на %d тактов",
+                            current_target_id, agent_node_id, stuck_counter, STUCK_BLACKLIST_TICKS,
+                        )
+                        blacklisted_until[current_target_id] = packet.tick + STUCK_BLACKLIST_TICKS
+                        current_target_id = None
+                        stuck_target_id = None
+                        stuck_counter = 0
+                    elif unreachable and current_target_id is not None:
+                        # Нет пути по графу — блокирую цель на короткий срок, возможно путь появится.
+                        logger.info(
+                            "Я заношу недостижимую цель target_id=%d в чёрный список на %d тактов",
+                            current_target_id, UNREACHABLE_BLACKLIST_TICKS,
+                        )
+                        blacklisted_until[current_target_id] = packet.tick + UNREACHABLE_BLACKLIST_TICKS
+                        current_target_id = None
+                        stuck_target_id = None
+                        stuck_counter = 0
+                    elif not target_valid:
                         if current_target_id is not None:
                             world_model.tasks.pop(current_target_id, None)
                         current_target_id = None
+                        stuck_target_id = None
+                        stuck_counter = 0
             except (ConnectionError, ConnectionRefusedError, TimeoutError, OSError) as exc:
                 logger.error("Я потерял соединение при отправке команды: %s", exc)
                 break
