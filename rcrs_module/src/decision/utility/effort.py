@@ -21,7 +21,7 @@ def effort_for_ambulance(entity: VisibleEntity, max_buriedness: float = MAX_BURI
     try:
         buriedness = entity.raw_sensor_data.buriedness
         if buriedness is None:
-            logger.warning("Я не могу вычислить трудоемкость без buriedness для entity_id=%s", entity.id)
+            logger.debug("Я пропускаю эффорт: нет buriedness для entity_id=%s", entity.id)
             return 0.0
         return _clamp_to_unit(buriedness / max_buriedness)
     except ZeroDivisionError:
@@ -35,7 +35,7 @@ def effort_for_fire(entity: VisibleEntity, max_total_area: float = MAX_TOTAL_ARE
         ground_area = entity.raw_sensor_data.ground_area
         floors = entity.raw_sensor_data.floors
         if ground_area is None or floors is None:
-            logger.warning("Я не могу вычислить площадь без ground_area и floors для entity_id=%s", entity.id)
+            logger.debug("Я пропускаю эффорт: нет ground_area/floors для entity_id=%s", entity.id)
             return 0.0
         total_area = ground_area * floors
         return _clamp_to_unit(total_area / max_total_area)
@@ -49,7 +49,7 @@ def effort_for_police(entity: VisibleEntity, max_repair_cost: float = MAX_REPAIR
     try:
         repair_cost = entity.raw_sensor_data.repair_cost
         if repair_cost is None:
-            logger.warning("Я не могу вычислить трудоемкость без repair_cost для entity_id=%s", entity.id)
+            logger.debug("Я пропускаю эффорт: нет repair_cost для entity_id=%s", entity.id)
             return 0.0
         return _clamp_to_unit(repair_cost / max_repair_cost)
     except ZeroDivisionError:

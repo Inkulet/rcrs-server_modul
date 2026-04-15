@@ -21,7 +21,7 @@ def run_fire_brigade(host: str, port: int, name: str) -> None:
     world_model = WorldModel()
 
     dispatcher = PreFilterDispatcher(work_rate=1.0, average_speed=AVERAGE_SPEED)
-    aggregator = UtilityAggregator(w_c=0.4, w_d=0.2, w_e=0.2, w_n=0.2)
+    aggregator = UtilityAggregator(w_c=0.40, w_d=0.30, w_e=0.20, w_n=0.10)
     selector = TargetSelector(c_switch=C_SWITCH)
 
     _connect_and_run(client, world_model, agent_type, dispatcher, aggregator, selector, name)

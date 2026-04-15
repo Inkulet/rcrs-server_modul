@@ -9,7 +9,7 @@ from world.entities import AgentState, AgentType, EntityType, VisibleEntity
 
 logger = logging.getLogger(__name__)
 
-ESTIMATED_TRIP_TO_REFUGE: float = 20.0
+ESTIMATED_TRIP_TO_REFUGE: float = 35.0
 
 UNREACHABLE_DISTANCE_THRESHOLD: float = MAX_MAP_DISTANCE * 0.9
 

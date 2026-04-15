@@ -21,7 +21,10 @@ def run_police_force(host: str, port: int, name: str) -> None:
 
     dispatcher = PreFilterDispatcher(work_rate=1.0, average_speed=AVERAGE_SPEED)
 
-    aggregator = UtilityAggregator(w_c=0.5, w_d=0.3, w_e=0.1, w_n=0.1)
+    # Я увеличиваю w_d для полиции: после фикса MaxMapDistance дистанция
+    # стала значимой, и ближайший завал на пути к спасателям важнее,
+    # чем самый дорогой по repair_cost.
+    aggregator = UtilityAggregator(w_c=0.30, w_d=0.40, w_e=0.20, w_n=0.10)
     selector = TargetSelector(c_switch=C_SWITCH)
 
     from agent._bootstrap import bootstrap_and_run

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import random
 import struct
 import time
@@ -29,10 +30,81 @@ from decision.filters.pre_filter import NeedRefugeException, PreFilterDispatcher
 from decision.utility.aggregator import UtilityAggregator
 from network.client import RCRSClient
 from world.cache import WorldModel
-from world.entities import AgentType, Position
+from world.entities import AgentType, EntityType, Position, VisibleEntity
 
 
 logger = logging.getLogger(__name__)
+
+
+def _entity_world_position(entity: VisibleEntity, world_model: WorldModel) -> tuple[int, int] | None:
+    if entity.entity_x is not None and entity.entity_y is not None:
+        if entity.entity_x != 0 or entity.entity_y != 0:
+            return int(entity.entity_x), int(entity.entity_y)
+
+    pos_edge = entity.raw_sensor_data.position_on_edge
+    if pos_edge is not None:
+        attrs = world_model.road_graph.nodes.get(pos_edge, {})
+        x = attrs.get("x")
+        y = attrs.get("y")
+        if x is not None and y is not None and (x != 0 or y != 0):
+            return int(x), int(y)
+
+    return None
+
+
+def _min_distance_blockade_to_important(
+    blockade: VisibleEntity,
+    world_model: WorldModel,
+) -> float:
+    """Я считаю минимальное евклидово расстояние от завала до ближайшего
+    важного объекта (живой гражданский/союзник/горящее здание/убежище).
+
+    Это реализация f_urgency_police по сданной матмодели:
+        1 / (min_{obj ∈ Targets ∪ Refuges} ||loc_blockade - loc_obj|| + ε)
+
+    При отсутствии важных объектов возвращаю +inf — тогда urgency будет ~0.
+    """
+    bpos = _entity_world_position(blockade, world_model)
+    if bpos is None:
+        return float("inf")
+    bx, by = bpos
+
+    min_d: float = float("inf")
+
+    for task in world_model.tasks.values():
+        if task.type == EntityType.BLOCKADE:
+            continue
+
+        # Я не учитываю погибших гражданских — их спасать уже некого.
+        if task.type in (EntityType.CIVILIAN, EntityType.HUMAN):
+            hp = task.raw_sensor_data.hp
+            if hp is not None and hp == 0:
+                continue
+
+        # Я учитываю только активно горящие здания как важные для полиции.
+        if task.type == EntityType.BUILDING:
+            fieryness = task.raw_sensor_data.fieryness
+            if fieryness is None or fieryness not in {1, 2, 3}:
+                continue
+
+        tpos = _entity_world_position(task, world_model)
+        if tpos is None:
+            continue
+        d = math.hypot(bx - tpos[0], by - tpos[1])
+        if d < min_d:
+            min_d = d
+
+    for refuge_id in world_model.refuge_ids:
+        attrs = world_model.road_graph.nodes.get(refuge_id, {})
+        rx = attrs.get("x")
+        ry = attrs.get("y")
+        if rx is None or ry is None or (rx == 0 and ry == 0):
+            continue
+        d = math.hypot(bx - int(rx), by - int(ry))
+        if d < min_d:
+            min_d = d
+
+    return min_d
 
 
 def run_field_agent(
@@ -51,6 +123,8 @@ def run_field_agent(
     exploration_target_node: int | None = None
     exploration_start_tick: int = 0
 
+    last_processed_tick: int = -1
+
     try:
         while True:
             try:
@@ -64,7 +138,18 @@ def run_field_agent(
 
             tick_start = time.perf_counter()
 
+            if last_processed_tick >= 0 and packet.tick - last_processed_tick > 1:
+                logger.warning(
+                    "Я пропустил %d такт(ов): прошлый=%d, текущий=%d "
+                    "(ядро не дождалось моей команды)",
+                    packet.tick - last_processed_tick - 1,
+                    last_processed_tick, packet.tick,
+                )
+            last_processed_tick = packet.tick
+
+            t_perc_start = time.perf_counter()
             world_model.apply_perception(packet)
+            t_perc = time.perf_counter() - t_perc_start
 
             agent_state   = packet.own_state
             agent_node_id = agent_state.position.entity_id
@@ -105,6 +190,7 @@ def run_field_agent(
                 current_target_id = None
                 continue
 
+            t_dij_start = time.perf_counter()
             allowed_types = dispatcher._allowed_entity_types(agent_type)
             type_relevant = [
                 e for e in world_model.tasks.values()
@@ -112,6 +198,7 @@ def run_field_agent(
                 and e.raw_sensor_data.position_on_edge not in world_model.refuge_ids
             ]
             fill_path_distances(world_model.road_graph, agent_node_id, type_relevant)
+            t_dij = time.perf_counter() - t_dij_start
 
             if packet.tick % LOG_DIAG_PERIOD == 0 or type_relevant:
                 logger.info(
@@ -158,6 +245,15 @@ def run_field_agent(
                     y=int(node_attrs.get("y", 0)),
                 )
 
+                # Для полиции task_distance по матмодели — это расстояние
+                # от завала до ближайшей важной цели/убежища, а не от агента.
+                if agent_type == AgentType.POLICE_FORCE:
+                    task_distance = _min_distance_blockade_to_important(
+                        entity, world_model,
+                    )
+                else:
+                    task_distance = entity.computed_metrics.path_distance
+
                 utility = aggregator.calculate_utility(
                     agent_state=agent_state,
                     entity=entity,
@@ -165,8 +261,9 @@ def run_field_agent(
                     target_position=target_position,
                     t_travel=t_travel,
                     t_work=t_work,
-                    task_distance=entity.computed_metrics.path_distance,
+                    task_distance=task_distance,
                     social_radius=SOCIAL_RADIUS,
+                    max_map_distance=world_model.max_map_distance,
                 )
                 utilities[entity.id] = utility
                 logger.debug(
@@ -177,7 +274,9 @@ def run_field_agent(
             for tid in packet.heard_target_ids:
                 if tid in utilities and tid != current_target_id:
                     old_u = utilities[tid]
-                    utilities[tid] = old_u * CLAIMED_TARGET_PENALTY
+                    # Я вычитаю штраф аддитивно: умножение ломало знак при U<0,
+                    # из-за чего занятая цель могла стать привлекательнее.
+                    utilities[tid] = old_u - CLAIMED_TARGET_PENALTY
                     logger.debug(
                         "Я снизил U для target_id=%d: %.4f → %.4f (занята другим)",
                         tid, old_u, utilities[tid],
@@ -238,7 +337,8 @@ def run_field_agent(
             tick_elapsed = time.perf_counter() - tick_start
             if tick_elapsed > TICK_BUDGET_SECONDS:
                 logger.warning(
-                    "Я превысил бюджет такта %d: %.3f с", packet.tick, tick_elapsed,
+                    "Я превысил бюджет такта %d: %.3f с (perc=%.3f, dij=%.3f, tasks=%d)",
+                    packet.tick, tick_elapsed, t_perc, t_dij, len(type_relevant),
                 )
 
     except KeyboardInterrupt:
