@@ -178,16 +178,19 @@ class TestUpdatePerception:
 
     def test_estimated_death_time_recalculated_after_merge(self) -> None:
         """Я проверяю: estimated_death_time пересчитывается из слитых данных."""
+        from world.entities import DEATH_TIME_SAFETY_FACTOR
+
         wm = WorldModel()
         wm.update_perception([self._make_entity(hp=1000, damage=10)])
-        # TTL = 1000/10 = 100
+        # Первое наблюдение: используется значение из ComputedMetrics helper=100.
         assert wm.tasks[10].computed_metrics.estimated_death_time == 100
 
         # Второе наблюдение: hp=None, damage=None (частичное обновление).
-        # Без пересчёта estimated_death_time было бы 99999 (из-за None hp/damage в raw).
+        # После merge re-pipe через estimate_death_time с safety factor.
         wm.update_perception([self._make_entity(hp=None, damage=None)])
-        # Merged: hp=1000, damage=10 → TTL = 100
-        assert wm.tasks[10].computed_metrics.estimated_death_time == 100
+        # Merged: hp=1000, damage=10 → TTL = int(100 * safety_factor)
+        expected_ttl = int(100 * DEATH_TIME_SAFETY_FACTOR)
+        assert wm.tasks[10].computed_metrics.estimated_death_time == expected_ttl
 
 
 # ---------------------------------------------------------------------------

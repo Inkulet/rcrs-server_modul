@@ -79,20 +79,6 @@ def dispatch_action(
     path = compute_path(world_model.road_graph, agent_node_id, nav_node_id)
 
     if not path:
-        if agent_type == AgentType.POLICE_FORCE:
-            tx_fb, ty_fb = _resolve_entity_coords(target_id, world_model)
-            if tx_fb == 0 and ty_fb == 0:
-                fallback_attrs = world_model.road_graph.nodes.get(nav_node_id, {})
-                tx_fb = fallback_attrs.get("x", 0)
-                ty_fb = fallback_attrs.get("y", 0)
-            if tx_fb != 0 or ty_fb != 0:
-                client.send_clear_area(tick, dest_x=tx_fb, dest_y=ty_fb)
-                logger.info(
-                    "Я пробиваю путь к target_id=%d (нет графового пути): AKClearArea dest=(%d,%d), tick=%d",
-                    target_id, tx_fb, ty_fb, tick,
-                )
-                return True, False, True
-
         logger.warning(
             "Я не могу построить путь к target_id=%d (nav_node=%d), сбрасываю цель",
             target_id, nav_node_id,
@@ -150,21 +136,30 @@ def _execute_at_target(
         if entity is None:
             client.send_rest(tick)
             return False, False, False
-        client.send_extinguish(tick, target_id, water=MAX_WATER_DISCHARGE)
-        logger.info("Я отправил AKExtinguish: target_id=%d, tick=%d", target_id, tick)
+        fieryness = entity.raw_sensor_data.fieryness
+        if fieryness is not None and fieryness not in {1, 2, 3}:
+            logger.info(
+                "Я пропускаю тушение: здание target_id=%d не горит (fieryness=%s), tick=%d",
+                target_id, fieryness, tick,
+            )
+            client.send_rest(tick)
+            return False, False, False
+        water = min(MAX_WATER_DISCHARGE, agent_state.resources.water_quantity)
+        client.send_extinguish(tick, target_id, water=water)
+        logger.info("Я отправил AKExtinguish: target_id=%d, water=%d, tick=%d", target_id, water, tick)
         return True, False, True
 
     if agent_type == AgentType.POLICE_FORCE:
         if entity is None:
             logger.info(
-                "Я пропускаю AKClear: завал target_id=%d пропал из кэша, tick=%d",
+                "Я пропускаю расчистку: завал target_id=%d пропал из кэша, tick=%d",
                 target_id, tick,
             )
             client.send_rest(tick)
             return False, False, False
-        client.send_clear(tick, target_id)
+        client.send_clear_area(tick, dest_x=tx, dest_y=ty)
         logger.info(
-            "Я отправил AKClear: target_id=%d, dest=(%d,%d), tick=%d",
+            "Я отправил AKClearArea: target_id=%d, dest=(%d,%d), tick=%d",
             target_id, tx, ty, tick,
         )
         return True, False, True
@@ -234,42 +229,65 @@ def _execute_move(
 
     if agent_type == AgentType.POLICE_FORCE:
         ax, ay = agent_state.position.x, agent_state.position.y
-        nearest_blockade: tuple[int, int, int] | None = None
-        min_d = float("inf")
-        for t in world_model.tasks.values():
-            if t.type != EntityType.BLOCKADE:
-                continue
-            bx, by = _resolve_entity_coords(t.id, world_model)
+
+        # Сервер отвергает AKClear (по entity ID) — завалы не удаляются.
+        # AKClearArea (по координатам) работает: создаёт коридор шириной
+        # 2*clearRad от позиции полицейского к (dest_x, dest_y) и вычитает
+        # площадь пересечения из полигона завала.
+        blockade_id = _find_blockade_on_path(agent_node_id, path, world_model)
+        if blockade_id is not None:
+            bx, by = _resolve_entity_coords(blockade_id, world_model)
             if bx == 0 and by == 0:
-                continue
-            d = math.hypot(bx - ax, by - ay)
-            if d < min_d:
-                min_d = d
-                nearest_blockade = (bx, by, t.id)
+                bx, by = dest_x, dest_y
+            d_to_blockade = math.hypot(bx - ax, by - ay)
 
-        if nearest_blockade is not None and min_d <= POLICE_CLEAR_MAX_DISTANCE:
-            bx, by, bid = nearest_blockade
-            client.send_clear_area(tick, dest_x=bx, dest_y=by)
+            if d_to_blockade <= POLICE_CLEAR_MAX_DISTANCE:
+                client.send_clear_area(tick, dest_x=bx, dest_y=by)
+                logger.info(
+                    "Я расчищаю завал на пути (AKClearArea): blockade_id=%d, dest=(%d,%d), dist=%.1f, tick=%d",
+                    blockade_id, bx, by, d_to_blockade, tick,
+                )
+                return True, False, True
+            # Блокада далеко — двигаемся к ней
+            client.send_move(tick, path, dest_x=bx, dest_y=by)
             logger.info(
-                "Я расчищаю завал на пути: blockade_id=%d, dist=%.1f, tick=%d",
-                bid, min_d, tick,
+                "Я иду к завалу на пути: blockade_id=%d, dist=%.1f, path_len=%d, tick=%d",
+                blockade_id, d_to_blockade, len(path), tick,
             )
-            return True, False, True
-
-        if len(path) <= 1 and entity is not None:
-            client.send_clear_area(tick, dest_x=dest_x, dest_y=dest_y)
-            logger.info(
-                "Я упёрся в завал target_id=%d → AKClearArea dest=(%d,%d), tick=%d",
-                target_id, dest_x, dest_y, tick,
-            )
-            return True, False, True
+            return True, False, False
 
     client.send_move(tick, path, dest_x=dest_x, dest_y=dest_y)
-    logger.debug(
-        "Я отправил AKMove: nav_node=%d, path_len=%d, dest=(%d,%d)",
-        nav_node_id, len(path), dest_x, dest_y,
+    logger.info(
+        "Я отправил AKMove: target_id=%d, nav=%d, path_len=%d, dest=(%d,%d), tick=%d",
+        target_id, nav_node_id, len(path), dest_x, dest_y, tick,
     )
     return True, False, False
+
+
+def _find_blockade_on_path(
+    agent_node_id: int,
+    path: list[int],
+    world_model: WorldModel,
+) -> int | None:
+    # Ищу ближайший по ходу пути завал. Приоритет — завалы на текущем
+    # узле и следующем (они физически блокируют движение), но также
+    # возвращаю завалы на дальних хопах, если ближе ничего не нашлось.
+    MAX_HOPS: int = 5
+
+    first_distant: int | None = None
+    for i, node in enumerate(path[:MAX_HOPS + 1]):
+        if node in world_model.blockades_by_node:
+            blockades = world_model.blockades_by_node[node]
+            if blockades:
+                if i <= 1:
+                    return next(iter(blockades))
+                if first_distant is None:
+                    first_distant = next(iter(blockades))
+
+    if agent_node_id in world_model.blockades_by_node:
+        return next(iter(world_model.blockades_by_node[agent_node_id]))
+
+    return first_distant
 
 
 __all__ = [

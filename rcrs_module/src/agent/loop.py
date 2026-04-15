@@ -14,6 +14,7 @@ from config import (
     EXPLORATION_SEED_PRIME,
     LOG_DIAG_PERIOD,
     NO_REFUGE_MAX_RETRIES,
+    POLICE_URGENCY_DISTANCE_SCALE,
     SOCIAL_RADIUS,
     TICK_BUDGET_SECONDS,
 )
@@ -56,14 +57,6 @@ def _min_distance_blockade_to_important(
     blockade: VisibleEntity,
     world_model: WorldModel,
 ) -> float:
-    """Я считаю минимальное евклидово расстояние от завала до ближайшего
-    важного объекта (живой гражданский/союзник/горящее здание/убежище).
-
-    Это реализация f_urgency_police по сданной матмодели:
-        1 / (min_{obj ∈ Targets ∪ Refuges} ||loc_blockade - loc_obj|| + ε)
-
-    При отсутствии важных объектов возвращаю +inf — тогда urgency будет ~0.
-    """
     bpos = _entity_world_position(blockade, world_model)
     if bpos is None:
         return float("inf")
@@ -247,10 +240,17 @@ def run_field_agent(
 
                 # Для полиции task_distance по матмодели — это расстояние
                 # от завала до ближайшей важной цели/убежища, а не от агента.
+                # Делю на POLICE_URGENCY_DISTANCE_SCALE (1000 мм = 1 м),
+                # чтобы формула 1/(d+ε) давала осмысленные значения вместо
+                # ~0 (без нормировки d в миллиметрах даёт f_urgency=0).
                 if agent_type == AgentType.POLICE_FORCE:
-                    task_distance = _min_distance_blockade_to_important(
+                    raw_min_d = _min_distance_blockade_to_important(
                         entity, world_model,
                     )
+                    if raw_min_d == float("inf"):
+                        task_distance = 1.0e9  # нет важных объектов рядом
+                    else:
+                        task_distance = raw_min_d / POLICE_URGENCY_DISTANCE_SCALE
                 else:
                     task_distance = entity.computed_metrics.path_distance
 

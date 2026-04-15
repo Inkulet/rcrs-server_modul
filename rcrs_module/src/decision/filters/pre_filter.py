@@ -9,7 +9,7 @@ from world.entities import AgentState, AgentType, EntityType, VisibleEntity
 
 logger = logging.getLogger(__name__)
 
-ESTIMATED_TRIP_TO_REFUGE: float = 35.0
+ESTIMATED_TRIP_TO_REFUGE: float = 10.0
 
 UNREACHABLE_DISTANCE_THRESHOLD: float = MAX_MAP_DISTANCE * 0.9
 
@@ -73,6 +73,20 @@ class PreFilterDispatcher:
                         entity.id,
                         exc,
                     )
+
+            if not filtered and tasks:
+                logger.info(
+                    "ДИАГ_ФИЛЬТР: %d задач → 0 после фильтра, agent_id=%s, типы: %s",
+                    len(tasks),
+                    agent_state.id,
+                    ", ".join(
+                        f"{e.id}(f={e.raw_sensor_data.fieryness},hp={e.raw_sensor_data.hp},"
+                        f"d={e.raw_sensor_data.damage},b={e.raw_sensor_data.buriedness},"
+                        f"pd={e.computed_metrics.path_distance:.0f})"
+                        for e in list(tasks)[:5]
+                    ),
+                )
+
             return filtered
         except ValueError as exc:
             logger.error("Я получил некорректные входные данные фильтра: %s", exc)
@@ -95,12 +109,10 @@ class PreFilterDispatcher:
                 )
                 return False
 
-            if damage is None and buriedness is None:
-                logger.debug(
-                    "Я исключаю гражданского с неизвестным состоянием: entity_id=%s",
-                    entity.id,
-                )
-                return False
+            # Гражданских с неизвестным состоянием (damage=None, buriedness=None)
+            # НЕ отсеиваем: данные обновятся из ChangeSet при подходе агента.
+            # Urgency вернёт 0 для неизвестных, но агент будет двигаться к ним,
+            # а не блуждать случайно.
 
         if entity.type == EntityType.HUMAN:
             hp = entity.raw_sensor_data.hp
@@ -120,20 +132,30 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            if fieryness is not None and fieryness not in {1, 2, 3, 4, 5, 6}:
+            # Отсеиваем ТОЛЬКО полностью сгоревшие (fieryness=8) — их
+            # уже не спасти. Остальные пропускаем: горящие (1-3) получат
+            # высокую urgency, а не-горящие (0, 4-7, None) — нулевую.
+            # Без этого агент хотя бы ДВИГАЕТСЯ к зданиям (вместо
+            # бесцельного блуждания), и обнаруживает пожары при подходе.
+            # Проверка «стоит ли тушить» — в executor._execute_at_target.
+            if fieryness is not None and fieryness == 8:
                 logger.debug(
-                    "Я исключаю здание: fieryness=%s не в {1..6}: entity_id=%s",
-                    fieryness,
+                    "Я исключаю полностью сгоревшее здание: fieryness=8, entity_id=%s",
                     entity.id,
                 )
                 return False
 
         if entity.type == EntityType.BLOCKADE:
             repair_cost = entity.raw_sensor_data.repair_cost
-            if repair_cost is None or repair_cost == 0:
+            # Я отсеиваю завал ТОЛЬКО если repair_cost явно 0 — это значит
+            # «уже расчищено». None (сервер ещё не прислал значение для
+            # удалённого наблюдаемого завала) оставляю: такой завал может
+            # блокировать важную цель, а с f_effort=0 он всё равно не станет
+            # топ-приоритетом сам по себе.
+            if repair_cost == 0:
                 logger.debug(
-                    "Я исключаю завал: repair_cost=%s: entity_id=%s",
-                    repair_cost, entity.id,
+                    "Я исключаю завал: repair_cost=0 (расчищено): entity_id=%s",
+                    entity.id,
                 )
                 return False
 
