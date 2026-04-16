@@ -10,11 +10,13 @@ from .entities import (
     AgentState, EntityType, MapEdge, MapNode, PerceptionPacket, VisibleEntity,
     estimate_death_time, compute_total_area,
 )
+from config import (
+    BLOCKADE_EDGE_PENALTY, BLOCKADE_PENALTY_MAX, BLOCKADE_REPAIR_COST_DIVISOR,
+)
+from decision.utility.distance import MAX_MAP_DISTANCE
 
 
 logger = logging.getLogger(__name__)
-
-_BLOCKADE_STALE_TICKS: int = 3
 
 
 class WorldModel:
@@ -25,6 +27,16 @@ class WorldModel:
         self.road_graph: nx.Graph = nx.Graph()
 
         self.refuge_ids: list[int] = []
+
+        # Я храню диагональ карты как нормировочную базу для f_dist.
+        # До получения карты использую консервативный fallback из distance.py;
+        # реальное значение пересчитывается при построении графа по bbox узлов.
+        self.max_map_distance: float = MAX_MAP_DISTANCE
+
+        # Индекс node_id → set of blockade entity_ids.
+        # Обновляется в refresh_blockade_weights, O(1) поиск на пути.
+        self.blockades_by_node: Dict[int, set[int]] = {}
+
         logger.info("Я инициализировал пустую модель мира и граф дорожной сети")
 
     def add_road_node(self, entity_id: int, **attrs: object) -> None:
@@ -67,14 +79,83 @@ class WorldModel:
 
         edge_count = 0
         for edge in edges:
-            self.road_graph.add_edge(edge.source_id, edge.target_id, weight=edge.weight)
+            self.road_graph.add_edge(
+                edge.source_id, edge.target_id,
+                weight=edge.weight, base_weight=edge.weight,
+            )
             edge_count += 1
+
+        # Я пересчитываю MaxMapDistance как диагональ bounding-box всех узлов графа.
+        # Это даёт корректную нормировку f_dist независимо от размера карты
+        # (Kobe, VC, Berlin — у всех разные размеры в миллиметрах).
+        xs: list[int] = []
+        ys: list[int] = []
+        for _node_id, attrs in self.road_graph.nodes(data=True):
+            x = attrs.get("x")
+            y = attrs.get("y")
+            if x is not None and y is not None:
+                xs.append(int(x))
+                ys.append(int(y))
+        if xs and ys:
+            diagonal = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+            if diagonal > 0:
+                self.max_map_distance = diagonal
+                logger.info(
+                    "Я вычислил MaxMapDistance по bbox карты: %.0f мм (узлов=%d)",
+                    self.max_map_distance, len(xs),
+                )
 
         logger.info(
             "Я построил дорожный граф: %d вершин, %d рёбер",
             node_count,
             edge_count,
         )
+
+    def refresh_blockade_weights(self) -> None:
+        for _u, _v, data in self.road_graph.edges(data=True):
+            base = data.get("base_weight")
+            if base is None:
+                base = data.get("weight", 1.0)
+                data["base_weight"] = base
+            data["weight"] = base
+
+        self.blockades_by_node.clear()
+
+        penalized = 0
+        for entity in self.tasks.values():
+            if entity.type != EntityType.BLOCKADE:
+                continue
+
+            node_id = entity.raw_sensor_data.position_on_edge
+            if node_id is None:
+                continue
+
+            # Я пропускаю завалы с repair_cost=0: они уже расчищены, но
+            # сервер ещё не прислал deleted_entity_ids. Без этой проверки
+            # полицейские бесконечно отправляли AKClear на пустые завалы.
+            repair_cost = entity.raw_sensor_data.repair_cost
+            if repair_cost is not None and repair_cost <= 0:
+                continue
+
+            self.blockades_by_node.setdefault(node_id, set()).add(entity.id)
+
+            if not self.road_graph.has_node(node_id):
+                continue
+
+            repair_cost = entity.raw_sensor_data.repair_cost or 0
+            penalty = BLOCKADE_EDGE_PENALTY + (repair_cost / BLOCKADE_REPAIR_COST_DIVISOR)
+            penalty = min(penalty, BLOCKADE_PENALTY_MAX)
+
+            for neighbor in self.road_graph.neighbors(node_id):
+                data = self.road_graph[node_id][neighbor]
+                base = data.get("base_weight", data.get("weight", 1.0))
+                candidate = base * penalty
+                if candidate > data.get("weight", base):
+                    data["weight"] = candidate
+                    penalized += 1
+
+        if penalized:
+            logger.debug("Я пересчитал штрафы обхода завалов: обновлено %d рёбер", penalized)
 
     def update_agents(self, ally_states: Iterable[AgentState]) -> None:
         for ally in ally_states:
@@ -103,28 +184,17 @@ class WorldModel:
         for entity in packet.visible_entities:
             self.last_seen_tick[entity.id] = packet.tick
 
-        stale_threshold = packet.tick - _BLOCKADE_STALE_TICKS
-        stale_blockades = [
-            eid for eid, entity in self.tasks.items()
-            if entity.type == EntityType.BLOCKADE
-            and self.last_seen_tick.get(eid, packet.tick) < stale_threshold
-        ]
-        for eid in stale_blockades:
-            logger.info(
-                "Я удалил завал entity_id=%d из кэша: %d тактов без обновлений "
-                "(сервер удалил после полной расчистки)",
-                eid, packet.tick - self.last_seen_tick.get(eid, packet.tick),
-            )
-            del self.tasks[eid]
-            self.last_seen_tick.pop(eid, None)
+        # Я НЕ удаляю завалы по давности наблюдения: сервер сам присылает
+        # deleted_entity_ids при фактической расчистке, а stale-expiry
+        # приводила к циклу «забыл завал → построил путь сквозь него →
+        # уперся → добавил обратно → забыл» (Kobe, узкие улицы).
+        self.refresh_blockade_weights()
 
         logger.debug(
-            "Я применил пакет восприятия такта %d: %d сущностей, %d союзников, "
-            "выбраковано завалов=%d",
+            "Я применил пакет восприятия такта %d: %d сущностей, %d союзников",
             packet.tick,
             len(packet.visible_entities),
             len(packet.ally_states),
-            len(stale_blockades),
         )
 
     def update_perception(self, visible_entities: Iterable[VisibleEntity]) -> None:

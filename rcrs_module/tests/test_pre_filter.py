@@ -84,21 +84,33 @@ class TestCivilianFiltering:
 class TestBuildingFiltering:
     """Я проверяю правила отсева зданий по fieryness из диплома."""
 
-    @pytest.mark.parametrize("fieryness", [7, 8])
-    def test_burned_building_filtered(self, fieryness: int) -> None:
-        """Я проверяю: fieryness ∈ {7,8} → инферно/пепел → бессмысленно тушить → отсеивается."""
+    def test_burned_down_building_filtered(self) -> None:
+        """Я проверяю: fieryness=8 → полностью сгорело → отсеивается."""
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE)
-        entity = make_building(fieryness=fieryness)
+        entity = make_building(fieryness=8)
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert result == []
 
-    @pytest.mark.parametrize("fieryness", [1, 2, 3, 4, 5, 6])
-    def test_active_fire_kept(self, fieryness: int) -> None:
-        """Я проверяю: fieryness ∈ {1..6} → нагрев или горение → проходит фильтр."""
+    @pytest.mark.parametrize("fieryness", [1, 2, 3])
+    def test_burning_building_kept(self, fieryness: int) -> None:
+        """Я проверяю: fieryness ∈ {1, 2, 3} → активно горит → проходит пре-фильтр."""
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE)
         entity = make_building(fieryness=fieryness)
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert entity in result
+
+    @pytest.mark.parametrize("fieryness", [0, 4, 5, 6, 7])
+    def test_non_burning_building_filtered(self, fieryness: int) -> None:
+        """Я проверяю: fieryness ∈ {0, 4, 5, 6, 7} → не горит → отсеивается.
+
+        Ранее эти здания проходили фильтр, что заставляло пожарных
+        бесконечно зацикливаться: выбирать ближайшее не-горящее здание →
+        AKRest → сброс цели → снова выбрать то же здание.
+        """
+        agent = make_agent(agent_type=AgentType.FIRE_BRIGADE)
+        entity = make_building(fieryness=fieryness)
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert result == []
 
 
 # ===========================================================================
@@ -259,11 +271,15 @@ class TestBuildingFierynessEdgeCases:
         assert len(result) == 1
 
     def test_fieryness_zero_filtered(self) -> None:
-        """Я проверяю: fieryness=0 → здание не горит → отсеивается."""
+        """Я проверяю: fieryness=0 → не горит → отсеивается пре-фильтром.
+
+        Неактивные здания отсеиваются, чтобы пожарные не зацикливались
+        на ближайшем негорящем здании и переходили к исследованию карты.
+        """
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
         entity = make_building(fieryness=0)
         result = make_dispatcher().filter_tasks(agent, [entity])
-        assert result == []
+        assert len(result) == 0
 
     def test_civilian_hp_none_kept(self) -> None:
         """Я проверяю: hp=None → неполные данные → гражданский сохраняется для исследования."""

@@ -115,13 +115,20 @@ class PerceptionPacket(BaseEntityModel):
     heard_target_ids: set[int] = Field(default_factory=set)
 
 
+# Я умножаю наивную оценку hp/damage на этот коэффициент, чтобы учесть
+# нелинейный рост damage (рядом с пожаром, кровотечение нарастает).
+# 0.7 — консервативный «запас» на то, что гражданский умрёт раньше,
+# чем предсказывает линейная экстраполяция.
+DEATH_TIME_SAFETY_FACTOR: float = 0.7
+
+
 def estimate_death_time(raw: RawSensorData) -> int:
     hp = raw.hp
     damage = raw.damage
     if hp is None or damage is None or damage <= 0:
         return 99999
     try:
-        return int(hp / damage)
+        return int((hp / damage) * DEATH_TIME_SAFETY_FACTOR)
     except ZeroDivisionError:
         return 99999
 

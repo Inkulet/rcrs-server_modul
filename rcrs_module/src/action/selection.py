@@ -14,8 +14,13 @@ class TargetSelector:
 
         self._blacklisted_until: dict[int, int] = {}
 
+        # Я отслеживаю застревание не по «последний узел == текущий»,
+        # а через множество уже посещённых узлов для текущей цели.
+        # Это ловит осцилляции (агент прыгает A↔B между двумя узлами
+        # вокруг завала) — узел формально «меняется», но реального
+        # прогресса нет, потому что мы уже были в обоих.
         self._stuck_target: int | None = None
-        self._stuck_node: int | None = None
+        self._seen_nodes_for_target: set[int] = set()
         self._stuck_counter: int = 0
 
     def select_best_target(
@@ -88,26 +93,32 @@ class TargetSelector:
     ) -> bool:
         if current_target_id != self._stuck_target:
             self._stuck_target = current_target_id
-            self._stuck_node = current_node
+            self._seen_nodes_for_target = {current_node}
             self._stuck_counter = 0
             return False
 
         if current_target_id is None:
             return False
 
-        if self._stuck_node != current_node:
-            self._stuck_node = current_node
+        # Я считаю прогрессом только посещение НОВОГО узла: осцилляция
+        # между двумя соседними узлами (типичный случай на узких улицах
+        # Kobe) больше не сбрасывает счётчик в 0.
+        if current_node not in self._seen_nodes_for_target:
+            self._seen_nodes_for_target.add(current_node)
             self._stuck_counter = 0
             return False
 
         self._stuck_counter += 1
         if self._stuck_counter >= STUCK_TICKS:
             logger.warning(
-                "Я обнаружил застой у target_id=%d: %d тактов на узле=%d — блокирую цель",
+                "Я обнаружил застой у target_id=%d: %d тактов без нового узла "
+                "(последний=%d, посещено=%d) — блокирую цель",
                 current_target_id, self._stuck_counter, current_node,
+                len(self._seen_nodes_for_target),
             )
             self.blacklist_stuck(current_target_id, current_tick)
             self._stuck_target = None
+            self._seen_nodes_for_target = set()
             self._stuck_counter = 0
             return True
 
@@ -115,7 +126,7 @@ class TargetSelector:
 
     def reset_stuck(self) -> None:
         self._stuck_target = None
-        self._stuck_node = None
+        self._seen_nodes_for_target = set()
         self._stuck_counter = 0
 
 

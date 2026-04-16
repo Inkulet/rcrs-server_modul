@@ -7,6 +7,7 @@ import pytest
 from world.entities import (
     AgentType,
     ComputedMetrics,
+    DEATH_TIME_SAFETY_FACTOR,
     EntityType,
     Position,
     RawSensorData,
@@ -25,7 +26,8 @@ class TestEstimateDeathTime:
 
     def test_normal_case(self) -> None:
         raw = RawSensorData(hp=1000, damage=10)
-        assert estimate_death_time(raw) == 100
+        # Я применяю safety factor для пессимистичной оценки.
+        assert estimate_death_time(raw) == int(100 * DEATH_TIME_SAFETY_FACTOR)
 
     def test_hp_none_returns_large(self) -> None:
         raw = RawSensorData(hp=None, damage=10)
@@ -49,7 +51,7 @@ class TestEstimateDeathTime:
 
     def test_large_values(self) -> None:
         raw = RawSensorData(hp=10000, damage=1)
-        assert estimate_death_time(raw) == 10000
+        assert estimate_death_time(raw) == int(10000 * DEATH_TIME_SAFETY_FACTOR)
 
 
 # ---------------------------------------------------------------------------

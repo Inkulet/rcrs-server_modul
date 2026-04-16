@@ -10,11 +10,11 @@ from decision.utility._utils import _clamp_to_unit
 
 logger = logging.getLogger(__name__)
 
-T_MAX: float = 1000.0
+T_MAX: float = 1500.0
 EPSILON: float = 1e-6
 STABLE_URGENCY: float = 0.01
 
-T_MAX_TTL: float = 10_000.0
+T_MAX_TTL: float = 1_000.0
 
 
 def urgency_for_ambulance(
