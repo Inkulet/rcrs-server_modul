@@ -91,18 +91,26 @@ class TestBuildingFiltering:
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert result == []
 
-    @pytest.mark.parametrize("fieryness", [0, 1, 2, 3, 4, 5, 6, 7])
-    def test_non_burned_building_kept(self, fieryness: int) -> None:
-        """Я проверяю: fieryness ∈ {0..7} → проходит пре-фильтр.
-
-        Проверка «стоит ли тушить» перенесена в executor._execute_at_target:
-        пре-фильтр пропускает все здания кроме полностью сгоревших (8),
-        чтобы агент двигался к зданиям вместо бесцельного блуждания.
-        """
+    @pytest.mark.parametrize("fieryness", [1, 2, 3])
+    def test_burning_building_kept(self, fieryness: int) -> None:
+        """Я проверяю: fieryness ∈ {1, 2, 3} → активно горит → проходит пре-фильтр."""
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE)
         entity = make_building(fieryness=fieryness)
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert entity in result
+
+    @pytest.mark.parametrize("fieryness", [0, 4, 5, 6, 7])
+    def test_non_burning_building_filtered(self, fieryness: int) -> None:
+        """Я проверяю: fieryness ∈ {0, 4, 5, 6, 7} → не горит → отсеивается.
+
+        Ранее эти здания проходили фильтр, что заставляло пожарных
+        бесконечно зацикливаться: выбирать ближайшее не-горящее здание →
+        AKRest → сброс цели → снова выбрать то же здание.
+        """
+        agent = make_agent(agent_type=AgentType.FIRE_BRIGADE)
+        entity = make_building(fieryness=fieryness)
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert result == []
 
 
 # ===========================================================================
@@ -262,16 +270,16 @@ class TestBuildingFierynessEdgeCases:
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert len(result) == 1
 
-    def test_fieryness_zero_kept(self) -> None:
-        """Я проверяю: fieryness=0 → не горит → проходит пре-фильтр.
+    def test_fieryness_zero_filtered(self) -> None:
+        """Я проверяю: fieryness=0 → не горит → отсеивается пре-фильтром.
 
-        Проверка горения перенесена в executor: пре-фильтр пропускает
-        не-горящие здания, чтобы агент двигался к ним, а не блуждал.
+        Неактивные здания отсеиваются, чтобы пожарные не зацикливались
+        на ближайшем негорящем здании и переходили к исследованию карты.
         """
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
         entity = make_building(fieryness=0)
         result = make_dispatcher().filter_tasks(agent, [entity])
-        assert len(result) == 1
+        assert len(result) == 0
 
     def test_civilian_hp_none_kept(self) -> None:
         """Я проверяю: hp=None → неполные данные → гражданский сохраняется для исследования."""

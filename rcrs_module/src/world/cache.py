@@ -130,6 +130,13 @@ class WorldModel:
             if node_id is None:
                 continue
 
+            # Я пропускаю завалы с repair_cost=0: они уже расчищены, но
+            # сервер ещё не прислал deleted_entity_ids. Без этой проверки
+            # полицейские бесконечно отправляли AKClear на пустые завалы.
+            repair_cost = entity.raw_sensor_data.repair_cost
+            if repair_cost is not None and repair_cost <= 0:
+                continue
+
             self.blockades_by_node.setdefault(node_id, set()).add(entity.id)
 
             if not self.road_graph.has_node(node_id):

@@ -18,7 +18,7 @@ from config import (
     SOCIAL_RADIUS,
     TICK_BUDGET_SECONDS,
 )
-from action.executor import dispatch_action
+from action.executor import dispatch_action, try_clear_local_blockade
 from action.navigation import (
     fill_path_distances,
     nearest_refuge_path,
@@ -296,13 +296,13 @@ def run_field_agent(
                 logger.info("Я выбрал/сохраняю цель target_id=%s, такт=%d", current_target_id, packet.tick)
 
             try:
-                if current_target_id is None:
-                    exploration_target_node, exploration_start_tick = _explore_and_update(
-                        client, packet, agent_state, agent_node_id,
-                        world_model, visited_nodes,
-                        exploration_target_node, exploration_start_tick,
-                    )
-                else:
+                # Я сначала пробую выполнить целевое действие, а если цель
+                # сброшена (или её не было) — перехожу к исследованию на
+                # том же такте. Это устраняет «потерянный такт»: раньше при
+                # сбросе цели агент отправлял AKRest и ждал следующего такта.
+                action_sent = False
+
+                if current_target_id is not None:
                     target_valid, unreachable, working = dispatch_action(
                         client=client,
                         agent_type=agent_type,
@@ -320,8 +320,24 @@ def run_field_agent(
                         world_model.remove_task(current_target_id)
                         current_target_id = None
                         selector.reset_stuck()
-                    elif working:
-                        selector.reset_stuck()
+                    else:
+                        action_sent = True
+                        if working:
+                            selector.reset_stuck()
+
+                if not action_sent:
+                    # Полицейский без цели: расчищаю ближайший завал вместо
+                    # бесполезной попытки AKMove сквозь блокаду.
+                    if agent_type == AgentType.POLICE_FORCE:
+                        if try_clear_local_blockade(client, packet.tick, agent_node_id, world_model):
+                            action_sent = True
+
+                if not action_sent:
+                    exploration_target_node, exploration_start_tick = _explore_and_update(
+                        client, packet, agent_state, agent_node_id,
+                        world_model, visited_nodes,
+                        exploration_target_node, exploration_start_tick,
+                    )
 
             except (ConnectionError, OSError) as exc:
                 logger.error("Я потерял соединение при отправке команды: %s", exc)

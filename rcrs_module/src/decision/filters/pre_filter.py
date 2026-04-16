@@ -132,16 +132,16 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            # Отсеиваем ТОЛЬКО полностью сгоревшие (fieryness=8) — их
-            # уже не спасти. Остальные пропускаем: горящие (1-3) получат
-            # высокую urgency, а не-горящие (0, 4-7, None) — нулевую.
-            # Без этого агент хотя бы ДВИГАЕТСЯ к зданиям (вместо
-            # бесцельного блуждания), и обнаруживает пожары при подходе.
-            # Проверка «стоит ли тушить» — в executor._execute_at_target.
-            if fieryness is not None and fieryness == 8:
+            # Я пропускаю только активно горящие здания (fieryness 1-3) и
+            # здания с неизвестным состоянием (fieryness=None, стоит проверить).
+            # Все остальные (0 — целое, 4-7 — потушено/охлаждается,
+            # 8 — полностью сгорело) отсеиваю: тушить нечего, а нулевая
+            # urgency при f_dist=0 создавала бесконечный цикл AKRest, из-за
+            # которого пожарные стояли на месте вместо исследования карты.
+            if fieryness is not None and fieryness not in {1, 2, 3}:
                 logger.debug(
-                    "Я исключаю полностью сгоревшее здание: fieryness=8, entity_id=%s",
-                    entity.id,
+                    "Я исключаю неактивное здание: fieryness=%s, entity_id=%s",
+                    fieryness, entity.id,
                 )
                 return False
 
