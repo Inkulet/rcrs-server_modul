@@ -97,6 +97,21 @@ def _min_distance_blockade_to_important(
         if d < min_d:
             min_d = d
 
+    # Учитываю позиции союзных полевых агентов (FIRE_BRIGADE, AMBULANCE_TEAM) —
+    # чтобы полиция приоритезировала завалы, блокирующие пожарных/медиков.
+    # На test-карте эти агенты спавнятся на дорогах с завалами (collapse рядом
+    # со стартовой позицией → TrafficAgent.setMobile(false) до расчистки).
+    # Без этого полиция уходит чистить дальние блокады, а союзники стоят.
+    for ally in world_model.agents.values():
+        if ally.type not in (AgentType.FIRE_BRIGADE, AgentType.AMBULANCE_TEAM):
+            continue
+        ax, ay = ally.position.x, ally.position.y
+        if ax == 0 and ay == 0:
+            continue
+        d = math.hypot(bx - ax, by - ay)
+        if d < min_d:
+            min_d = d
+
     return min_d
 
 

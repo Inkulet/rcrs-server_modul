@@ -29,7 +29,10 @@ class PreFilterDispatcher:
 
     def _allowed_entity_types(self, agent_type: AgentType) -> frozenset[EntityType]:
         if agent_type == AgentType.FIRE_BRIGADE:
-            return frozenset({EntityType.BUILDING})
+            # Я разрешаю пожарному не только тушить здания, но и откапывать
+            # заваленных людей (AKRescue): сервер это поддерживает
+            # (MiscSimulator.checkRescue принимает FireBrigade).
+            return frozenset({EntityType.BUILDING, EntityType.CIVILIAN, EntityType.HUMAN})
         if agent_type == AgentType.AMBULANCE_TEAM:
             return frozenset({EntityType.CIVILIAN, EntityType.HUMAN})
         return frozenset({EntityType.BLOCKADE})
@@ -44,16 +47,22 @@ class PreFilterDispatcher:
                 )
                 return []
 
-            if agent_state.type == AgentType.FIRE_BRIGADE and agent_state.resources.water_quantity == 0:
-                logger.debug(
-                    "Я направляю пожарного в убежище из-за отсутствия воды: agent_id=%s",
-                    agent_state.id,
-                )
-                raise NeedRefugeException("Я обнаружил, что у пожарного нет воды")
-
             allowed_types = self._allowed_entity_types(agent_state.type)
             tasks_list = list(tasks)
             tasks = [e for e in tasks_list if e.type in allowed_types]
+
+            # Без воды пожарный не может тушить — убираю здания из пула задач,
+            # оставляя только спасение заваленных. Раньше здесь сразу
+            # выбрасывалось NeedRefugeException, из-за чего пожарный уезжал в
+            # убежище, игнорируя заваленных мирных рядом.
+            if agent_state.type == AgentType.FIRE_BRIGADE and agent_state.resources.water_quantity == 0:
+                tasks = [e for e in tasks if e.type != EntityType.BUILDING]
+                if not tasks:
+                    logger.debug(
+                        "Я направляю пожарного в убежище: воды нет и откапывать некого, agent_id=%s",
+                        agent_state.id,
+                    )
+                    raise NeedRefugeException("Я обнаружил, что у пожарного нет воды и задач на спасение")
             logger.debug(
                 "Я отфильтровал сущности по типам %s: было=%d, осталось=%d, agent_id=%s",
                 ",".join(t.value for t in sorted(allowed_types, key=lambda t: t.value)),

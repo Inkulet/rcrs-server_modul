@@ -171,11 +171,20 @@ class TestAgentStateFiltering:
         assert result == []
 
     def test_fire_brigade_no_water_raises_need_refuge(self) -> None:
-        """Я проверяю: FIRE_BRIGADE с water=0 → исключение NeedRefugeException."""
+        """Я проверяю: FIRE_BRIGADE с water=0 и без задач на спасение → NeedRefugeException."""
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=0)
         entity = make_building(fieryness=2)
         with pytest.raises(NeedRefugeException):
             make_dispatcher().filter_tasks(agent, [entity])
+
+    def test_fire_brigade_no_water_keeps_rescue(self) -> None:
+        """Я проверяю: FIRE_BRIGADE без воды всё ещё может откапывать заваленных."""
+        agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=0)
+        bld = make_building(fieryness=2)
+        civ = make_civilian(hp=10000, damage=50, buriedness=5, estimated_death_time=9999)
+        result = make_dispatcher().filter_tasks(agent, [bld, civ])
+        assert bld not in result
+        assert civ in result
 
     def test_fire_brigade_with_water_no_exception(self) -> None:
         """Я проверяю: FIRE_BRIGADE с водой → нет исключения, работает нормально."""
@@ -247,12 +256,12 @@ class TestPoliceBlockadeFiltering:
         result = make_dispatcher().filter_tasks(agent, [blockade])
         assert result == []
 
-    def test_fire_brigade_filters_civilians(self) -> None:
-        """Я проверяю: FIRE_BRIGADE не получает задачи типа CIVILIAN."""
+    def test_fire_brigade_keeps_buried_civilians(self) -> None:
+        """Я проверяю: FIRE_BRIGADE теперь получает задачи CIVILIAN (AKRescue)."""
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
         civ = make_civilian(hp=10000, damage=50, buriedness=5, estimated_death_time=9999)
         result = make_dispatcher().filter_tasks(agent, [civ])
-        assert result == []
+        assert civ in result
 
 
 # ===========================================================================

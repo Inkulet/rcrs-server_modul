@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from world.entities import AgentState, AgentType, VisibleEntity
+from world.entities import AgentState, AgentType, EntityType, VisibleEntity
 
 from decision.utility._utils import _clamp_to_unit
 
@@ -95,6 +95,16 @@ def compute_urgency(
             if entity is None:
                 logger.warning("Я не получил сущность для срочности пожарного: agent_id=%s", agent_state.id)
                 return 0.0
+            # Для заваленных людей пожарный играет роль спасателя:
+            # приоритет рассчитываю по TTL (hp/damage), как у медика.
+            if entity.type in (EntityType.CIVILIAN, EntityType.HUMAN):
+                if t_travel is None or t_work is None:
+                    logger.warning(
+                        "Я не получил t_travel/t_work для спасения пожарным: agent_id=%s",
+                        agent_state.id,
+                    )
+                    return 0.0
+                return urgency_for_ambulance(entity, t_travel, t_work, stable_value)
             return urgency_for_fire(entity, t_max)
 
         if agent_state.type == AgentType.POLICE_FORCE:

@@ -97,13 +97,19 @@ def dispatch_action(
     ax, ay = agent_state.position.x, agent_state.position.y
     eucl_dist = math.hypot(tx - ax, ty - ay)
 
-    if agent_type in (AgentType.FIRE_BRIGADE, AgentType.POLICE_FORCE):
-        max_dist = (
-            FIRE_EXTINGUISH_MAX_DISTANCE
-            if agent_type == AgentType.FIRE_BRIGADE
-            else POLICE_CLEAR_MAX_DISTANCE
-        )
-        at_target = eucl_dist <= max_dist
+    # Пожарный может действовать дистанционно ТОЛЬКО при тушении здания
+    # (AKExtinguish — дальнобойный). Для AKRescue сервер требует, чтобы
+    # пожарный стоял на одной Area с жертвой (MiscSimulator.checkRescue:
+    # h.getPosition().equals(ag.getPosition())).
+    fire_rescue_mode = (
+        agent_type == AgentType.FIRE_BRIGADE
+        and entity is not None
+        and entity.type in (EntityType.CIVILIAN, EntityType.HUMAN)
+    )
+    if agent_type == AgentType.POLICE_FORCE:
+        at_target = eucl_dist <= POLICE_CLEAR_MAX_DISTANCE
+    elif agent_type == AgentType.FIRE_BRIGADE and not fire_rescue_mode:
+        at_target = eucl_dist <= FIRE_EXTINGUISH_MAX_DISTANCE
     else:
         at_target = agent_node_id == nav_node_id
 
@@ -138,6 +144,34 @@ def _execute_at_target(
             # зацикливаться. Команду НЕ отправляю: вызывающий код
             # перейдёт к исследованию и отправит AKMove.
             return False, True, False
+
+        # Спасение заваленных мирных/союзников — пожарный тоже его умеет
+        # (сервер принимает AKRescue от FireBrigade, MiscSimulator.java:407).
+        if entity.type in (EntityType.CIVILIAN, EntityType.HUMAN):
+            buriedness = entity.raw_sensor_data.buriedness
+            hp = entity.raw_sensor_data.hp
+            if hp is not None and hp == 0:
+                logger.info(
+                    "Я пропускаю спасение: цель target_id=%d мертва, tick=%d",
+                    target_id, tick,
+                )
+                world_model.remove_task(target_id)
+                return False, True, False
+            if buriedness is None or buriedness <= 0:
+                logger.info(
+                    "Я пропускаю спасение: buriedness=%s у target_id=%d, tick=%d",
+                    buriedness, target_id, tick,
+                )
+                # Откопан — передаю цель медикам (убираю из своих задач).
+                world_model.remove_task(target_id)
+                return False, True, False
+            client.send_rescue(tick, target_id)
+            logger.info(
+                "Я (пожарный) отправил AKRescue: target_id=%d, buriedness=%d, tick=%d",
+                target_id, buriedness, tick,
+            )
+            return True, False, True
+
         fieryness = entity.raw_sensor_data.fieryness
         if fieryness is not None and fieryness not in {1, 2, 3}:
             logger.info(
