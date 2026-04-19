@@ -78,6 +78,7 @@ def fill_path_distances(
     graph: nx.Graph,
     agent_node_id: int,
     entities: list[VisibleEntity],
+    blockades_by_node: dict[int, set[int]] | None = None,
 ) -> list[VisibleEntity]:
     try:
         dist_map: dict[int, float] = nx.single_source_dijkstra_path_length(
@@ -100,7 +101,31 @@ def fill_path_distances(
                 if nearest is not None and nearest in dist_map:
                     nav_id = nearest
 
+        # Fallback: reverse lookup через blockades_by_node.
+        # Если завал не удалось привязать к графу через position_on_edge
+        # или entity_x/entity_y, ищем его в индексе «узел → завалы».
+        if nav_id not in dist_map and blockades_by_node:
+            for node_id, blk_set in blockades_by_node.items():
+                if entity.id in blk_set and node_id in dist_map:
+                    nav_id = node_id
+                    logger.debug(
+                        "Я привязал завал entity_id=%d к узлу %d через blockades_by_node",
+                        entity.id, node_id,
+                    )
+                    break
+
         distance = dist_map.get(nav_id, MAX_MAP_DISTANCE)
+
+        if distance >= MAX_MAP_DISTANCE:
+            logger.warning(
+                "Я не смог привязать entity_id=%d к графу: "
+                "pos_on_edge=%s, entity_xy=(%s,%s), nav_id=%d → distance=MAX",
+                entity.id,
+                entity.raw_sensor_data.position_on_edge,
+                entity.entity_x, entity.entity_y,
+                nav_id,
+            )
+
         entity.computed_metrics.path_distance = distance
         logger.debug(
             "Я обновил path_distance для entity_id=%d (nav_id=%d): %.1f мм",
@@ -142,6 +167,58 @@ def nearest_refuge_path(
         logger.error("Я не смог найти путь ни к одному убежищу из node=%d", from_id)
 
     return best_path
+
+
+def choose_refuge_with_exit(
+    graph: nx.Graph,
+    from_id: int,
+    refuge_ids: list[int],
+    next_target_node: int | None,
+) -> list[int]:
+    """Шаг 13: выбирает refuge с проверкой обратного маршрута к следующей цели.
+
+    Перебирает refuges в порядке возрастания расстояния от агента; для
+    каждого проверяет, существует ли путь `refuge → next_target_node`.
+    Возвращает путь к первому подходящему refuge. Если `next_target_node`
+    не задан или все refuges «тупиковые» — fallback на `nearest_refuge_path`.
+
+    Аналог `_calc_rest` в ADF `DefaultExtendActionClear`.
+    """
+    if not refuge_ids:
+        return []
+    if next_target_node is None or not graph.has_node(next_target_node):
+        return nearest_refuge_path(graph, from_id, refuge_ids)
+
+    # Собираем все достижимые refuges с их дистанциями и сортируем.
+    scored: list[tuple[float, int, list[int]]] = []
+    for refuge_id in refuge_ids:
+        path = compute_path(graph, from_id, refuge_id)
+        if not path:
+            continue
+        dist = sum(
+            graph[u][v].get("weight", 1.0) for u, v in zip(path, path[1:])
+        )
+        scored.append((dist, refuge_id, path))
+
+    scored.sort(key=lambda s: s[0])
+
+    for dist, refuge_id, path in scored:
+        exit_path = compute_path(graph, refuge_id, next_target_node)
+        if exit_path:
+            logger.info(
+                "Я выбрал refuge_id=%d с проверкой exit→node=%d, "
+                "дистанция=%.1f мм", refuge_id, next_target_node, dist,
+            )
+            return path
+
+    # Ни один refuge не даёт обратного пути — берём ближайший как fallback.
+    if scored:
+        logger.info(
+            "Я не нашёл refuge с exit→node=%d, fallback на ближайший",
+            next_target_node,
+        )
+        return scored[0][2]
+    return []
 
 
 def random_walk(
@@ -251,6 +328,7 @@ __all__ = [
     "compute_path_distance",
     "fill_path_distances",
     "nearest_refuge_path",
+    "choose_refuge_with_exit",
     "random_walk",
     "pick_exploration_target",
     "plan_exploration_path",

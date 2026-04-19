@@ -74,7 +74,9 @@ class WorldModel:
     ) -> None:
         node_count = 0
         for node in nodes:
-            self.road_graph.add_node(node.entity_id, x=node.x, y=node.y)
+            self.road_graph.add_node(
+                node.entity_id, x=node.x, y=node.y, apexes=node.apexes,
+            )
             node_count += 1
 
         edge_count = 0
@@ -127,8 +129,22 @@ class WorldModel:
                 continue
 
             node_id = entity.raw_sensor_data.position_on_edge
+
+            # Если position_on_edge не пришёл от сервера, пытаюсь
+            # восстановить узел графа по координатам завала (entity_x/y).
             if node_id is None:
-                continue
+                if entity.entity_x is not None and entity.entity_y is not None:
+                    from action.navigation import find_nearest_node
+                    inferred = find_nearest_node(self.road_graph, entity.entity_x, entity.entity_y)
+                    if inferred is not None:
+                        node_id = inferred
+                        logger.info(
+                            "Я вывел position_on_edge=%d для завала entity_id=%d "
+                            "из координат (%d, %d)",
+                            node_id, entity.id, entity.entity_x, entity.entity_y,
+                        )
+                if node_id is None:
+                    continue
 
             # Я пропускаю завалы с repair_cost=0: они уже расчищены, но
             # сервер ещё не прислал deleted_entity_ids. Без этой проверки
@@ -170,7 +186,9 @@ class WorldModel:
             self.refuge_ids = list(packet.refuge_ids)
             logger.info("Я сохранил %d убежищ: %s", len(self.refuge_ids), self.refuge_ids)
 
-        self.agents.clear()
+        # Я НЕ очищаю agents целиком: союзники вне зоны видимости
+        # сохраняют последнее известное состояние. Без этого social_factor
+        # считал 0 однотипных агентов рядом, даже если они там были.
         self.update_agents(packet.ally_states)
 
         for eid in packet.deleted_entity_ids:
@@ -180,6 +198,25 @@ class WorldModel:
             self.last_seen_tick.pop(eid, None)
 
         self.update_perception(packet.visible_entities)
+
+        # Резервный источник position_on_edge: PROP_BLOCKADES дорог даёт
+        # обратный индекс blockade_id → road_id. Если у завала в кэше нет
+        # position_on_edge — заполняю из этого индекса.
+        if packet.blockade_to_road:
+            for blk_id, road_id in packet.blockade_to_road.items():
+                entity = self.tasks.get(blk_id)
+                if entity is not None and entity.raw_sensor_data.position_on_edge is None:
+                    merged_raw = entity.raw_sensor_data.model_copy(
+                        update={"position_on_edge": road_id},
+                    )
+                    self.tasks[blk_id] = entity.model_copy(
+                        update={"raw_sensor_data": merged_raw},
+                    )
+                    logger.info(
+                        "Я восстановил position_on_edge=%d для завала entity_id=%d "
+                        "из PROP_BLOCKADES дороги",
+                        road_id, blk_id,
+                    )
 
         for entity in packet.visible_entities:
             self.last_seen_tick[entity.id] = packet.tick
@@ -209,7 +246,12 @@ class WorldModel:
             existing = self.tasks.get(entity.id)
             if existing is None:
                 self.tasks[entity.id] = entity
-                logger.info("Я добавил новую сущность в кэш: entity_id=%s", entity.id)
+                apexes = entity.raw_sensor_data.apexes
+                logger.info(
+                    "Я добавил новую сущность в кэш: entity_id=%s, type=%s, apexes_len=%s",
+                    entity.id, entity.type.value,
+                    len(apexes) if apexes is not None else None,
+                )
                 continue
 
             def _keep(
@@ -221,6 +263,7 @@ class WorldModel:
             new_raw = entity.raw_sensor_data
             old_raw = existing.raw_sensor_data
 
+            merged_apexes = new_raw.apexes if new_raw.apexes is not None else old_raw.apexes
             merged_raw = new_raw.model_copy(
                 update={
                     "hp":              _keep(new_raw.hp,              old_raw.hp),
@@ -232,6 +275,7 @@ class WorldModel:
                     "ground_area":     _keep(new_raw.ground_area,     old_raw.ground_area),
                     "repair_cost":     _keep(new_raw.repair_cost,     old_raw.repair_cost),
                     "position_on_edge":_keep(new_raw.position_on_edge, old_raw.position_on_edge),
+                    "apexes": merged_apexes,
                 }
             )
 
@@ -250,6 +294,9 @@ class WorldModel:
                     "utility_score": entity.utility_score,
                     "entity_x": entity.entity_x if entity.entity_x is not None else existing.entity_x,
                     "entity_y": entity.entity_y if entity.entity_y is not None else existing.entity_y,
+                    # is_ally — неизменяемое свойство типа сущности (CIVILIAN vs
+                    # союзный агент), отследил по URN при первом наблюдении.
+                    "is_ally": entity.is_ally or existing.is_ally,
                 }
             )
 

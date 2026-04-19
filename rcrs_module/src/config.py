@@ -102,6 +102,15 @@ EXPLORATION_MAX_TICKS: int = 80
 # Применяется аддитивно: U' = U - CLAIMED_TARGET_PENALTY.
 CLAIMED_TARGET_PENALTY: float = 0.3
 
+# Шаг 10: сколько тактов помнить услышанную цель союзника (FIRE_BRIGADE),
+# чтобы разводить пожарных по разным очагам. Заменяет K-means
+# кластеризацию из ADF на простую «память» о занятых целях.
+RECENT_ALLY_TARGET_TICKS: int = 15
+
+# Шаг 10: дополнительный штраф (поверх CLAIMED_TARGET_PENALTY),
+# применяемый к целям из recent_allies_targets для FIRE_BRIGADE.
+ALLY_TARGET_LONGTERM_PENALTY: float = 0.2
+
 # Порог гистерезиса при переключении цели.
 C_SWITCH: float = 0.1
 
@@ -128,6 +137,11 @@ STUCK_BLACKLIST_TICKS: int = 60
 
 # Цель без графового пути блокируется на меньший срок — путь может появиться.
 UNREACHABLE_BLACKLIST_TICKS: int = 30
+
+# Через сколько тактов после попадания завала в skip-список полицейский
+# снова попробует его расчистить (иначе завалы, попавшие туда ошибочно,
+# остались бы заблокированы навсегда).
+CLEAR_SKIP_EXPIRE_TICKS: int = 30
 
 # ---------------------------------------------------------------------------
 # Служебные параметры главного цикла
@@ -170,11 +184,14 @@ __all__ = [
     "EXPLORATION_MAX_TICKS",
     # Координация
     "CLAIMED_TARGET_PENALTY",
+    "RECENT_ALLY_TARGET_TICKS",
+    "ALLY_TARGET_LONGTERM_PENALTY",
     "C_SWITCH",
     # Застревание
     "STUCK_TICKS",
     "STUCK_BLACKLIST_TICKS",
     "UNREACHABLE_BLACKLIST_TICKS",
+    "CLEAR_SKIP_EXPIRE_TICKS",
     # Цикл
     "TICK_BUDGET_SECONDS",
     "LOG_DIAG_PERIOD",

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from world.entities import AgentState, AgentType, VisibleEntity
+from world.entities import AgentState, AgentType, EntityType, VisibleEntity
 
 from decision.utility._utils import _clamp_to_unit
 
@@ -74,6 +74,10 @@ def compute_effort(
             return effort_for_ambulance(entity, max_buriedness)
 
         if agent_state.type == AgentType.FIRE_BRIGADE:
+            # При спасении заваленных людей пожарный использует buriedness
+            # (как медик), а не ground_area/floors (у людей их нет → 0).
+            if entity.type in (EntityType.CIVILIAN, EntityType.HUMAN):
+                return effort_for_ambulance(entity, max_buriedness)
             return effort_for_fire(entity, max_total_area)
 
         if agent_state.type == AgentType.POLICE_FORCE:

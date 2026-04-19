@@ -210,8 +210,17 @@ class RCRSClient:
         return packet
 
     def send_move(self, time: int, path: List[int], dest_x: int = -1, dest_y: int = -1) -> None:
+        # Сервер (TrafficSimulator.handleMove) отклоняет путь, если первый
+        # элемент != позиции агента И не соседствует с ней. Логирую голову
+        # пути, позицию агента и длину — чтобы на серверном rejected-лог
+        # Ignoring/Rejecting move можно было сразу сопоставить причину.
+        head = path[:2] if path else []
+        agent_pos = self._prev_position.entity_id if self._prev_position else None
+        logger.debug(
+            "Я отправил AKMove: time=%d, agent_pos=%s, path_head=%s, path_len=%d",
+            time, agent_pos, head, len(path),
+        )
         self._send_command(build_ak_move(self._agent_id, time, path, dest_x, dest_y))
-        logger.debug("Я отправил AKMove: time=%d, path=%s", time, path)
 
     def send_rescue(self, time: int, target_id: int) -> None:
         self._send_command(build_ak_rescue(self._agent_id, time, target_id))

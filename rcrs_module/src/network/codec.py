@@ -82,6 +82,7 @@ PROP_FLOORS             = _PROP | 10   # 0x120A
 PROP_FIERYNESS          = _PROP | 13   # 0x120D
 PROP_BUILDING_AREA_GROUND = _PROP | 16 # 0x1210
 
+PROP_APEXES             = _PROP | 18   # 0x1212  IntArrayProperty — плоский список [x0,y0,x1,y1,...] вершин полигона
 PROP_EDGES              = _PROP | 19   # 0x1213  EdgeListProperty — список рёбер дорожного графа
 PROP_POSITION           = _PROP | 20   # 0x1214
 PROP_HP                 = _PROP | 24   # 0x1218
@@ -339,7 +340,15 @@ def parse_ka_connect_ok(
             if urn in _AREA_URNS:
                 x = props[PROP_X].intValue if PROP_X in props else 0
                 y = props[PROP_Y].intValue if PROP_Y in props else 0
-                map_nodes.append(MapNode(entity_id=eid, x=x, y=y))
+                area_apexes: Optional[list[int]] = None
+                if PROP_APEXES in props and props[PROP_APEXES].defined:
+                    try:
+                        apexes_values = list(props[PROP_APEXES].intList.values)
+                        if apexes_values:
+                            area_apexes = apexes_values
+                    except (AttributeError, TypeError):
+                        pass
+                map_nodes.append(MapNode(entity_id=eid, x=x, y=y, apexes=area_apexes))
                 node_coords[eid] = (x, y)
                 _entity_protos_area.append((eid, urn, props))
 
@@ -404,6 +413,7 @@ def parse_ka_sense(
 
     visible_entities: list[VisibleEntity] = []
     ally_states:       list[AgentState]   = []
+    blockade_to_road: dict[int, int]      = {}
 
     if COMP_UPDATES in proto.components:
         change_set: ChangeSetProto = proto.components[COMP_UPDATES].changeSet
@@ -467,8 +477,21 @@ def parse_ka_sense(
                         utility_score=0.0,
                         entity_x=x,
                         entity_y=y,
+                        is_ally=True,
                     ))
                 continue
+
+            # Для дорог извлекаю PROP_BLOCKADES — список завалов на этой
+            # дороге. Строю обратный индекс blockade_id → road_id как
+            # резервный источник position_on_edge (на случай, если
+            # PROP_POSITION для завала не пришёл в ChangeSet).
+            if eurn == ENT_ROAD and PROP_BLOCKADES in props and props[PROP_BLOCKADES].defined:
+                try:
+                    blk_ids = list(props[PROP_BLOCKADES].intList.values)
+                    for blk_id in blk_ids:
+                        blockade_to_road[blk_id] = eid
+                except (AttributeError, TypeError):
+                    pass
 
             entity_type = _ENTITY_URN_TO_ENTITY_TYPE.get(eurn)
             if entity_type is None:
@@ -568,6 +591,7 @@ def parse_ka_sense(
         map_edges=[],
         deleted_entity_ids=deleted_ids,
         heard_target_ids=heard_target_ids,
+        blockade_to_road=blockade_to_road,
     )
 
     logger.debug(
@@ -593,6 +617,18 @@ def _parse_raw_sensor_data(props: dict[int, Any], entity_urn: int = 0) -> RawSen
             return None
         return float(p.intValue)
 
+    def _int_list(urn: int) -> Optional[list[int]]:
+        if urn not in props:
+            return None
+        p = props[urn]
+        if not p.defined:
+            return None
+        try:
+            values = list(p.intList.values)
+        except (AttributeError, TypeError):
+            return None
+        return values if values else None
+
     return RawSensorData(
         hp=_int(PROP_HP),
         damage=_int(PROP_DAMAGE),
@@ -603,6 +639,7 @@ def _parse_raw_sensor_data(props: dict[int, Any], entity_urn: int = 0) -> RawSen
         ground_area=_int(PROP_BUILDING_AREA_GROUND),
         repair_cost=_int(PROP_REPAIR_COST),
         position_on_edge=_int(PROP_POSITION) if entity_urn in (ENT_CIVILIAN, ENT_BLOCKADE) else None,
+        apexes=_int_list(PROP_APEXES),
     )
 
 
@@ -619,7 +656,7 @@ __all__ = [
     "PROP_X", "PROP_Y", "PROP_HP", "PROP_DAMAGE", "PROP_BURIEDNESS",
     "PROP_TEMPERATURE", "PROP_FIERYNESS", "PROP_FLOORS",
     "PROP_BUILDING_AREA_GROUND", "PROP_REPAIR_COST", "PROP_WATER_QUANTITY",
-    "PROP_EDGES", "PROP_BLOCKADES",
+    "PROP_EDGES", "PROP_BLOCKADES", "PROP_APEXES",
     "MSG_AK_MOVE", "MSG_AK_RESCUE", "MSG_AK_EXTINGUISH",
     "MSG_AK_CLEAR", "MSG_AK_LOAD", "MSG_AK_UNLOAD", "MSG_AK_REST",
     "MSG_AK_SAY", "COMP_MESSAGE",
