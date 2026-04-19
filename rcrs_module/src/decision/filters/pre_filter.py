@@ -32,9 +32,6 @@ class PreFilterDispatcher:
 
     def _allowed_entity_types(self, agent_type: AgentType) -> frozenset[EntityType]:
         if agent_type == AgentType.FIRE_BRIGADE:
-            # Я разрешаю пожарному не только тушить здания, но и откапывать
-            # заваленных людей (AKRescue): сервер это поддерживает
-            # (MiscSimulator.checkRescue принимает FireBrigade).
             return frozenset({EntityType.BUILDING, EntityType.CIVILIAN, EntityType.HUMAN})
         if agent_type == AgentType.AMBULANCE_TEAM:
             return frozenset({EntityType.CIVILIAN, EntityType.HUMAN})
@@ -59,10 +56,6 @@ class PreFilterDispatcher:
             tasks_list = list(tasks)
             tasks = [e for e in tasks_list if e.type in allowed_types]
 
-            # Без воды пожарный не может тушить — убираю здания из пула задач,
-            # оставляя только спасение заваленных. Раньше здесь сразу
-            # выбрасывалось NeedRefugeException, из-за чего пожарный уезжал в
-            # убежище, игнорируя заваленных мирных рядом.
             if agent_state.type == AgentType.FIRE_BRIGADE and agent_state.resources.water_quantity == 0:
                 tasks = [e for e in tasks if e.type != EntityType.BUILDING]
                 if not tasks:
@@ -158,12 +151,6 @@ class PreFilterDispatcher:
                 )
                 return False
 
-            # Гражданских с неизвестным состоянием (damage=None, buriedness=None)
-            # НЕ отсеиваем: данные обновятся из ChangeSet при подходе агента.
-            # Urgency вернёт 0 для неизвестных, но агент будет двигаться к ним,
-            # а не блуждать случайно.
-
-            # Гражданский, уже оказавшийся в убежище, — не наша цель.
             if pos_edge is not None and pos_edge in refuge_set:
                 logger.debug(
                     "Я исключаю гражданского в убежище: entity_id=%s, pos=%s",
@@ -171,19 +158,12 @@ class PreFilterDispatcher:
                 )
                 return False
 
-            # Пожарный спасает ТОЛЬКО заваленных и раненых: damage>0 и
-            # buriedness>0 (аналог `_is_valid_human` в ADF). Здоровых
-            # гражданских пропускаем — это зона ответственности амбуланса.
             if agent_type == AgentType.FIRE_BRIGADE:
                 if damage is None or damage <= 0:
                     return False
                 if buriedness is None or buriedness <= 0:
                     return False
 
-            # Амбуланс берёт ТОЛЬКО откопанных (buriedness == 0) —
-            # заваленных откапывают пожарные. Исключение: если на карте
-            # нет живых пожарных вообще, амбуланс берёт и заваленных
-            # (лучше криво, чем никак).
             if agent_type == AgentType.AMBULANCE_TEAM:
                 if (
                     buriedness is not None
@@ -210,27 +190,18 @@ class PreFilterDispatcher:
                 )
                 return False
 
-            # Союзник в убежище — не спасаем (уже безопасен).
             if pos_edge is not None and pos_edge in refuge_set:
                 return False
 
-            # Пожарный: заваленному союзнику нужны dmg>0 И buriedness>0.
             if agent_type == AgentType.FIRE_BRIGADE:
                 if damage is None or damage <= 0:
                     return False
 
-            # Амбуланс: только откопанные (иначе — дело пожарных).
             if agent_type == AgentType.AMBULANCE_TEAM and has_live_fire_brigades:
                 return False
 
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
-            # Я пропускаю только активно горящие здания (fieryness 1-3) и
-            # здания с неизвестным состоянием (fieryness=None, стоит проверить).
-            # Все остальные (0 — целое, 4-7 — потушено/охлаждается,
-            # 8 — полностью сгорело) отсеиваю: тушить нечего, а нулевая
-            # urgency при f_dist=0 создавала бесконечный цикл AKRest, из-за
-            # которого пожарные стояли на месте вместо исследования карты.
             if fieryness is not None and fieryness not in {1, 2, 3}:
                 logger.debug(
                     "Я исключаю неактивное здание: fieryness=%s, entity_id=%s",
@@ -240,11 +211,6 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.BLOCKADE:
             repair_cost = entity.raw_sensor_data.repair_cost
-            # Я отсеиваю завал ТОЛЬКО если repair_cost явно 0 — это значит
-            # «уже расчищено». None (сервер ещё не прислал значение для
-            # удалённого наблюдаемого завала) оставляю: такой завал может
-            # блокировать важную цель, а с f_effort=0 он всё равно не станет
-            # топ-приоритетом сам по себе.
             if repair_cost == 0:
                 logger.debug(
                     "Я исключаю завал: repair_cost=0 (расчищено): entity_id=%s",

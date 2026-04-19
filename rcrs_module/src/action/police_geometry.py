@@ -10,11 +10,6 @@ def nearest_apex(
     agent_xy: tuple[float, float],
     apexes: Sequence[int] | None,
 ) -> Optional[tuple[int, int, float]]:
-    """Ближайшая вершина полигона к точке агента.
-
-    `apexes` — плоский массив [x0, y0, x1, y1, ...]. Возвращает (x, y, dist)
-    или None, если apex-ов нет или формат некорректный.
-    """
     if apexes is None or len(apexes) < 2:
         return None
 
@@ -41,11 +36,6 @@ def scale_clear_vector(
     target_xy: tuple[float, float],
     clear_distance: float,
 ) -> tuple[int, int]:
-    """Единичный вектор agent → target, отмасштабированный до clear_distance.
-
-    Возвращает абсолютные координаты (clear_x, clear_y) = agent + unit*clear_distance.
-    Аналог `_scale_clear` в ADF, но возвращает сразу точку назначения.
-    """
     ax, ay = agent_xy
     tx, ty = target_xy
     dx = tx - ax
@@ -80,11 +70,8 @@ def intersects_blockade(
     line_end: tuple[float, float],
     blockade_apexes: Sequence[int] | None,
 ) -> bool:
-    """Пересекает ли отрезок (line_start → line_end) полигон завала."""
     poly = _apexes_to_polygon(blockade_apexes)
     if poly is None:
-        # Без apex-ов consider завал непересекающим — вызывающий код
-        # должен иметь fallback (дистанцию по координатам, например).
         return False
     try:
         line = LineString([line_start, line_end])
@@ -98,13 +85,6 @@ def intersects_area_edge(
     target_xy: tuple[float, float],
     area_apexes: Sequence[int] | None,
 ) -> bool:
-    """Пересекает ли линия «агент → target» границу area-полигона.
-
-    Если area — выпуклый road, то пересечение границы означает, что
-    хотя бы один конец линии лежит вне area. Используется для решения
-    «нужно ли вообще расчищать завал перед движением»: если линия не
-    выходит за границы текущего road, завал на другой стороне не мешает.
-    """
     poly = _apexes_to_polygon(area_apexes)
     if poly is None:
         return False

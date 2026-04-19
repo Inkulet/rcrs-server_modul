@@ -84,6 +84,22 @@ class RCRSClient:
 
         self._mock_tick: int = 0
 
+        # Опциональный MetricsCollector — подключается из loop.py. Все
+        # send_* методы инкрементят соответствующие счётчики. Если None
+        # (до первого такта или при отключённых метриках) — игнор.
+        self._metrics: Optional[object] = None
+
+    def set_metrics(self, metrics: object) -> None:
+        self._metrics = metrics
+
+    def _inc_metric(self, counter_name: str) -> None:
+        if self._metrics is None:
+            return
+        try:
+            self._metrics.inc(counter_name)  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+
     def connect(self) -> None:
         if self.mock:
             logger.info("Работа в mock-режиме")
@@ -221,40 +237,49 @@ class RCRSClient:
             time, agent_pos, head, len(path),
         )
         self._send_command(build_ak_move(self._agent_id, time, path, dest_x, dest_y))
+        self._inc_metric("ak_move")
 
     def send_rescue(self, time: int, target_id: int) -> None:
         self._send_command(build_ak_rescue(self._agent_id, time, target_id))
+        self._inc_metric("ak_rescue")
         logger.info("Я отправил AKRescue: time=%d, target=%d", time, target_id)
 
     def send_extinguish(self, time: int, target_id: int, water: int) -> None:
         self._send_command(build_ak_extinguish(self._agent_id, time, target_id, water))
+        self._inc_metric("ak_extinguish")
         logger.info("Я отправил AKExtinguish: time=%d, target=%d, water=%d", time, target_id, water)
 
     def send_clear(self, time: int, target_id: int) -> None:
         self._send_command(build_ak_clear(self._agent_id, time, target_id))
+        self._inc_metric("ak_clear_area")
         logger.info("Я отправил AKClear: time=%d, target=%d", time, target_id)
 
     def send_clear_area(self, time: int, dest_x: int, dest_y: int) -> None:
         self._send_command(build_ak_clear_area(self._agent_id, time, dest_x, dest_y))
+        self._inc_metric("ak_clear_area")
         logger.info("Я отправил AKClearArea: time=%d, dest=(%d,%d)", time, dest_x, dest_y)
 
     def send_load(self, time: int, target_id: int) -> None:
         self._send_command(build_ak_load(self._agent_id, time, target_id))
         self._prev_transporting = True
+        self._inc_metric("ak_load")
         logger.info("Я отправил AKLoad: time=%d, target=%d", time, target_id)
 
     def send_unload(self, time: int) -> None:
         self._send_command(build_ak_unload(self._agent_id, time))
 
         self._prev_transporting = False
+        self._inc_metric("ak_unload")
         logger.info("Я отправил AKUnload: time=%d", time)
 
     def send_rest(self, time: int) -> None:
         self._send_command(build_ak_rest(self._agent_id, time))
+        self._inc_metric("ak_rest")
         logger.debug("Я отправил AKRest: time=%d", time)
 
     def send_say(self, time: int, data: bytes) -> None:
         self._send_command(build_ak_say(self._agent_id, time, data))
+        self._inc_metric("ak_say")
         logger.debug("Я отправил AKSay: time=%d, data_len=%d", time, len(data))
 
     def _send_raw(self, frame: bytes) -> None:

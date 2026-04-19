@@ -21,10 +21,6 @@ def run_police_force(host: str, port: int, name: str) -> None:
 
     dispatcher = PreFilterDispatcher(work_rate=1.0, average_speed=AVERAGE_SPEED)
 
-    # По матмодели f_urgency_police = 1/(d_blockade_to_target+ε) — это уже
-    # ранжирует завалы по важности (близко к целям → высокий приоритет).
-    # Поэтому w_c доминирует; w_d (агент→завал) остаётся значимым как
-    # тайбрейкер «при равной важности еду к ближайшему».
     aggregator = UtilityAggregator(w_c=0.50, w_d=0.25, w_e=0.15, w_n=0.10)
     selector = TargetSelector(c_switch=C_SWITCH)
 

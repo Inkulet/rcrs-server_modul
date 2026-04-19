@@ -175,21 +175,11 @@ def choose_refuge_with_exit(
     refuge_ids: list[int],
     next_target_node: int | None,
 ) -> list[int]:
-    """Шаг 13: выбирает refuge с проверкой обратного маршрута к следующей цели.
-
-    Перебирает refuges в порядке возрастания расстояния от агента; для
-    каждого проверяет, существует ли путь `refuge → next_target_node`.
-    Возвращает путь к первому подходящему refuge. Если `next_target_node`
-    не задан или все refuges «тупиковые» — fallback на `nearest_refuge_path`.
-
-    Аналог `_calc_rest` в ADF `DefaultExtendActionClear`.
-    """
     if not refuge_ids:
         return []
     if next_target_node is None or not graph.has_node(next_target_node):
         return nearest_refuge_path(graph, from_id, refuge_ids)
 
-    # Собираем все достижимые refuges с их дистанциями и сортируем.
     scored: list[tuple[float, int, list[int]]] = []
     for refuge_id in refuge_ids:
         path = compute_path(graph, from_id, refuge_id)
@@ -211,7 +201,6 @@ def choose_refuge_with_exit(
             )
             return path
 
-    # Ни один refuge не даёт обратного пути — берём ближайший как fallback.
     if scored:
         logger.info(
             "Я не нашёл refuge с exit→node=%d, fallback на ближайший",
