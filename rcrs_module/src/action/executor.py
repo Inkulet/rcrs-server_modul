@@ -314,14 +314,12 @@ def _execute_at_target(
             world_model, agent_state, [target_id], aim_xy=None,
         )
         if pick is None:
-            ax, ay = agent_state.position.x, agent_state.position.y
-            cx, cy = (tx, ty) if (tx != 0 or ty != 0) else (ax + 1000, ay)
-            _police_send_clear_area_xy(client, tick, agent_state, cx, cy)
             logger.info(
-                "Я (полиция) AKClearArea fallback-центроид: target_id=%d, "
-                "dest=(%d,%d), tick=%d", target_id, cx, cy, tick,
+                "Я пропускаю расчистку: цель target_id=%d не подтвердилась как "
+                "реальный завал для AKClearArea, tick=%d",
+                target_id, tick,
             )
-            return True, False, True, target_id
+            return False, False, False, None
 
         bid, _cost, cx, cy = pick
         forced = _register_and_check_same_clear(agent_state.id, (cx, cy))

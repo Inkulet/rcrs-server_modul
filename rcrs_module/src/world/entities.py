@@ -132,6 +132,10 @@ class PerceptionPacket(BaseEntityModel):
     # дорожных сущностей. Используется как резервный источник position_on_edge
     # в случае, если PROP_POSITION для завала не пришёл.
     blockade_to_road: dict[int, int] = Field(default_factory=dict)
+    # Снимок содержимого PROP_BLOCKADES для дорог, реально пришедших в текущем
+    # ChangeSet. Нужен, чтобы удалять из локального кэша завалы, которые
+    # исчезли с дороги, но ещё не были присланы в deleted_entity_ids.
+    road_blockades: dict[int, List[StrictInt]] = Field(default_factory=dict)
 
 
 # Я умножаю наивную оценку hp/damage на этот коэффициент, чтобы учесть
