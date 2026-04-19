@@ -10,7 +10,7 @@ from config import (
     POLICE_CLEAR_MAX_DISTANCE,
 )
 from action.navigation import compute_path, find_nearest_node
-from action.police_geometry import scale_clear_vector
+from action.police_geometry import intersects_blockade, nearest_apex, scale_clear_vector
 from network.client import RCRSClient
 from world.cache import WorldModel
 from world.entities import AgentState, AgentType, EntityType
@@ -94,6 +94,17 @@ def _select_blockade_apex_clear(
             continue
 
         aim = aim_xy if aim_xy is not None else (bx, by)
+        apexes = entity.raw_sensor_data.apexes
+        if (
+            aim_xy is not None
+            and apexes is not None
+            and not intersects_blockade((ax, ay), aim_xy, apexes)
+        ):
+            nearest = nearest_apex((ax, ay), apexes)
+            if nearest is not None:
+                aim = (nearest[0], nearest[1])
+            else:
+                aim = (bx, by)
         clear_x, clear_y = scale_clear_vector(
             (ax, ay), aim, POLICE_CLEAR_MAX_DISTANCE,
         )
@@ -195,6 +206,20 @@ def dispatch_action(
         return False, True, False, None
 
     entity = world_model.tasks.get(target_id)
+    if (
+        agent_type == AgentType.AMBULANCE_TEAM
+        and entity is not None
+        and entity.type == EntityType.CIVILIAN
+    ):
+        pos_edge = entity.raw_sensor_data.position_on_edge
+        if pos_edge is not None and pos_edge in world_model.refuge_ids:
+            logger.info(
+                "Я снимаю цель target_id=%d: гражданский уже в убежище pos=%d, tick=%d",
+                target_id, pos_edge, tick,
+            )
+            world_model.remove_task(target_id)
+            return False, False, False, None
+
     tx, ty = _resolve_entity_coords(target_id, world_model)
 
     if tx == 0 and ty == 0:
@@ -391,6 +416,16 @@ def _ambulance_at_target(
             target_id, entity_type.value, tick,
         )
         return False, True, False, None
+
+    pos_edge = entity.raw_sensor_data.position_on_edge  # type: ignore[union-attr]
+    if pos_edge is not None and pos_edge in world_model.refuge_ids:
+        world_model.remove_task(target_id)
+        logger.info(
+            "Я снял цель target_id=%d: гражданский уже в убежище pos=%d, "
+            "AKLoad не нужен, tick=%d",
+            target_id, pos_edge, tick,
+        )
+        return False, False, False, None
 
     client.send_load(tick, target_id)
     logger.info("Я отправил AKLoad: target_id=%d, tick=%d", target_id, tick)
