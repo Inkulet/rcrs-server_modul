@@ -74,7 +74,9 @@ class WorldModel:
     ) -> None:
         node_count = 0
         for node in nodes:
-            self.road_graph.add_node(node.entity_id, x=node.x, y=node.y)
+            self.road_graph.add_node(
+                node.entity_id, x=node.x, y=node.y, apexes=node.apexes,
+            )
             node_count += 1
 
         edge_count = 0
@@ -244,7 +246,12 @@ class WorldModel:
             existing = self.tasks.get(entity.id)
             if existing is None:
                 self.tasks[entity.id] = entity
-                logger.info("Я добавил новую сущность в кэш: entity_id=%s", entity.id)
+                apexes = entity.raw_sensor_data.apexes
+                logger.info(
+                    "Я добавил новую сущность в кэш: entity_id=%s, type=%s, apexes_len=%s",
+                    entity.id, entity.type.value,
+                    len(apexes) if apexes is not None else None,
+                )
                 continue
 
             def _keep(
@@ -256,6 +263,7 @@ class WorldModel:
             new_raw = entity.raw_sensor_data
             old_raw = existing.raw_sensor_data
 
+            merged_apexes = new_raw.apexes if new_raw.apexes is not None else old_raw.apexes
             merged_raw = new_raw.model_copy(
                 update={
                     "hp":              _keep(new_raw.hp,              old_raw.hp),
@@ -267,6 +275,7 @@ class WorldModel:
                     "ground_area":     _keep(new_raw.ground_area,     old_raw.ground_area),
                     "repair_cost":     _keep(new_raw.repair_cost,     old_raw.repair_cost),
                     "position_on_edge":_keep(new_raw.position_on_edge, old_raw.position_on_edge),
+                    "apexes": merged_apexes,
                 }
             )
 
@@ -285,6 +294,9 @@ class WorldModel:
                     "utility_score": entity.utility_score,
                     "entity_x": entity.entity_x if entity.entity_x is not None else existing.entity_x,
                     "entity_y": entity.entity_y if entity.entity_y is not None else existing.entity_y,
+                    # is_ally — неизменяемое свойство типа сущности (CIVILIAN vs
+                    # союзный агент), отследил по URN при первом наблюдении.
+                    "is_ally": entity.is_ally or existing.is_ally,
                 }
             )
 

@@ -52,21 +52,42 @@ class TestCivilianFiltering:
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert entity in result
 
-    def test_civilian_with_buriedness_kept(self) -> None:
-        """Я проверяю: buriedness > 0 → завален → проходит фильтр."""
+    def test_civilian_with_buriedness_filtered_for_ambulance(self) -> None:
+        """Я проверяю: завалённого гражданского амбуланс НЕ берёт, если есть
+        пожарные — это зона их ответственности (Шаг 14 плана)."""
         agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
         entity = make_civilian(
             hp=10000, damage=0, buriedness=5, path_distance=10.0, estimated_death_time=9999
         )
+        # Без world_model has_live_fire_brigades=True по умолчанию → отсев.
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert entity not in result
+
+    def test_buried_civilian_kept_for_fire_brigade(self) -> None:
+        """Я проверяю: заваленного гражданского пожарный берёт (для AKRescue).
+        damage=50, buriedness=5 — оба > 0, условие `_is_valid_human` соблюдено."""
+        agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
+        entity = make_civilian(
+            hp=10000, damage=50, buriedness=5, path_distance=10.0, estimated_death_time=9999
+        )
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert entity in result
 
-    def test_buried_agent_kept_for_ambulance(self) -> None:
-        """Я проверяю: завалённый спасатель — релевантная задача для скорой."""
+    def test_dugout_civilian_kept_for_ambulance(self) -> None:
+        """Я проверяю: ОТКОПАННОГО гражданского амбуланс берёт — это его работа."""
+        agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
+        entity = make_civilian(
+            hp=10000, damage=50, buriedness=0, path_distance=10.0, estimated_death_time=9999,
+        )
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert entity in result
+
+    def test_buried_ally_filtered_for_ambulance(self) -> None:
+        """Я проверяю: заваленного союзника амбуланс НЕ берёт — пусть откопают пожарные."""
         agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
         entity = make_human(hp=10000, damage=0, buriedness=5, estimated_death_time=9999)
         result = make_dispatcher().filter_tasks(agent, [entity])
-        assert entity in result
+        assert entity not in result
 
     def test_unburied_agent_filtered_for_ambulance(self) -> None:
         """Я проверяю: незавалённого спасателя скорая не выбирает как задачу."""
@@ -137,14 +158,16 @@ class TestDeadlineFiltering:
         assert result == []
 
     def test_deadline_not_exceeded_kept(self) -> None:
-        """Я проверяю: estimated_death_time > time_to_action → успеваем → задача остаётся."""
+        """Я проверяю: estimated_death_time > time_to_action → успеваем → задача остаётся.
+        Использую откопанного гражданского, чтобы не зацепиться за новый фильтр
+        «амбуланс не берёт заваленных, пока есть пожарные»."""
         agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
-        # path_distance=10, buriedness=5, rate=1.0 → time_to_action=15
-        # estimated_death_time=9999 >> 15 → успеваем
+        # path_distance=10, buriedness=0 → time_to_action=10
+        # estimated_death_time=9999 >> 10 → успеваем
         entity = make_civilian(
             hp=10000,
             damage=50,
-            buriedness=5,
+            buriedness=0,
             path_distance=10.0,
             estimated_death_time=9999,
         )
@@ -194,10 +217,13 @@ class TestAgentStateFiltering:
         assert entity in result
 
     def test_multiple_entities_mixed_filtering(self) -> None:
-        """Я проверяю: из смешанного списка отсеиваются только нерелевантные задачи."""
+        """Я проверяю: из смешанного списка отсеиваются только нерелевантные задачи.
+        Для амбуланса «alive» = откопанный и раненый (buriedness=0, damage>0)."""
         agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
         dead = make_civilian(entity_id=1, hp=0)
-        alive = make_civilian(entity_id=2, hp=10000, damage=50, estimated_death_time=9999)
+        alive = make_civilian(
+            entity_id=2, hp=10000, damage=50, buriedness=0, estimated_death_time=9999,
+        )
         healthy = make_civilian(entity_id=3, hp=8000, damage=0, buriedness=0)
 
         result = make_dispatcher().filter_tasks(agent, [dead, alive, healthy])
@@ -291,8 +317,51 @@ class TestBuildingFierynessEdgeCases:
         assert len(result) == 0
 
     def test_civilian_hp_none_kept(self) -> None:
-        """Я проверяю: hp=None → неполные данные → гражданский сохраняется для исследования."""
+        """Я проверяю: hp=None → неполные данные → гражданский сохраняется для исследования.
+        Использую откопанного (buriedness=0), чтобы не цеплялся новый фильтр амбуланса."""
         agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
-        entity = make_civilian(hp=None, damage=50, buriedness=5)
+        entity = make_civilian(hp=None, damage=50, buriedness=0)
         result = make_dispatcher().filter_tasks(agent, [entity])
         assert len(result) == 1
+
+
+# ===========================================================================
+# Тесты типоспецифичной валидации (Шаги 8, 14)
+# ===========================================================================
+
+
+class TestFireBrigadeValidation:
+    """Шаг 8: пожарный берёт гражданского ТОЛЬКО если damage>0 И buriedness>0."""
+
+    def test_fire_brigade_skips_damage_only_civilian(self) -> None:
+        """Раненый, но не заваленный — работа амбуланса, не пожарного."""
+        agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
+        entity = make_civilian(
+            hp=10000, damage=50, buriedness=0, estimated_death_time=9999,
+        )
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert entity not in result
+
+    def test_fire_brigade_skips_buried_without_damage(self) -> None:
+        """Заваленный, но без damage — не валидная цель для AKRescue по ADF."""
+        agent = make_agent(agent_type=AgentType.FIRE_BRIGADE, water=5000)
+        entity = make_civilian(
+            hp=10000, damage=0, buriedness=5, estimated_death_time=9999,
+        )
+        result = make_dispatcher().filter_tasks(agent, [entity])
+        assert entity not in result
+
+
+class TestAmbulanceHasNoFireBrigadesFallback:
+    """Шаг 14: если на карте нет живых пожарных — амбуланс берёт и заваленных."""
+
+    def test_buried_civilian_kept_when_no_fire_brigades(self) -> None:
+        from world.cache import WorldModel
+
+        agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
+        entity = make_civilian(
+            hp=10000, damage=0, buriedness=5, estimated_death_time=9999,
+        )
+        wm = WorldModel()  # пусто: ни одного союзника
+        result = make_dispatcher().filter_tasks(agent, [entity], world_model=wm)
+        assert entity in result

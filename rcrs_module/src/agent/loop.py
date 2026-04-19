@@ -3,25 +3,28 @@ from __future__ import annotations
 import logging
 import math
 import random
+import statistics
 import struct
 import time
+from pathlib import Path
 
 from config import (
+    ALLY_TARGET_LONGTERM_PENALTY,
     AVERAGE_SPEED,
     CLAIMED_TARGET_PENALTY,
-    CLEAR_SKIP_EXPIRE_TICKS,
     EXPLORATION_MAX_TICKS,
     EXPLORATION_PATH_LENGTH,
     EXPLORATION_SEED_PRIME,
     LOG_DIAG_PERIOD,
-    MAX_CLEAR_STALE_TICKS,
     NO_REFUGE_MAX_RETRIES,
     POLICE_URGENCY_DISTANCE_SCALE,
+    RECENT_ALLY_TARGET_TICKS,
     SOCIAL_RADIUS,
     TICK_BUDGET_SECONDS,
 )
 from action.executor import dispatch_action, try_clear_local_blockade
 from action.navigation import (
+    choose_refuge_with_exit,
     fill_path_distances,
     nearest_refuge_path,
     pick_exploration_target,
@@ -37,6 +40,94 @@ from world.entities import AgentType, EntityType, Position, VisibleEntity
 
 
 logger = logging.getLogger(__name__)
+
+# Бюджет такта по матмодели (из ТЗ диплома): 100 мс на utility-вычисления.
+TIME_BUDGET_MS: float = 100.0
+# Файл для отчёта о замерах. Пишу в корень проекта рядом с main.py.
+TIME_REPORT_PATH: Path = Path(__file__).resolve().parents[2] / "time.md"
+# Период обновления отчёта (тактов).
+TIME_REPORT_PERIOD: int = 25
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    s = sorted(values)
+    k = max(0, min(len(s) - 1, int(round(pct / 100.0 * (len(s) - 1)))))
+    return s[k]
+
+
+def _write_time_report(
+    path: Path,
+    agent_id: int,
+    agent_type_name: str,
+    samples: list[tuple[int, int, float, float, float, float]],
+) -> None:
+    """samples: (tick, n_tasks, t_perc_ms, t_dij_ms, t_util_ms, t_total_ms)."""
+    if not samples:
+        return
+
+    util = [s[4] for s in samples]
+    total = [s[5] for s in samples]
+    perc = [s[2] for s in samples]
+    dij = [s[3] for s in samples]
+    n_tasks = [s[1] for s in samples]
+    over = sum(1 for v in util if v > TIME_BUDGET_MS)
+
+    def stats(xs: list[float]) -> str:
+        return (
+            f"mean={statistics.fmean(xs):.2f} "
+            f"p50={_percentile(xs, 50):.2f} "
+            f"p95={_percentile(xs, 95):.2f} "
+            f"p99={_percentile(xs, 99):.2f} "
+            f"max={max(xs):.2f}"
+        )
+
+    lines = [
+        f"# Замеры времени матмодели — agent_id={agent_id} ({agent_type_name})",
+        "",
+        f"Бюджет: **{TIME_BUDGET_MS:.0f} мс** на utility-вычисления (t_util).",
+        f"Сэмплов: **{len(samples)}** тактов.",
+        "",
+        "## Сводка (мс)",
+        "",
+        "| Фаза | mean | p50 | p95 | p99 | max |",
+        "|---|---|---|---|---|---|",
+    ]
+
+    for name, xs in [
+        ("perception (t_perc)", perc),
+        ("dijkstra   (t_dij)",  dij),
+        ("**utility (t_util)**", util),
+        ("такт целиком (t_total)", total),
+    ]:
+        lines.append(
+            f"| {name} | {statistics.fmean(xs):.2f} | "
+            f"{_percentile(xs, 50):.2f} | {_percentile(xs, 95):.2f} | "
+            f"{_percentile(xs, 99):.2f} | {max(xs):.2f} |"
+        )
+
+    pct_over = 100.0 * over / len(samples)
+    verdict = "✅ укладываемся" if pct_over < 1.0 else (
+        "⚠️ редкие превышения" if pct_over < 5.0 else "❌ систематически выше"
+    )
+    lines += [
+        "",
+        f"## Бюджет {TIME_BUDGET_MS:.0f} мс по t_util",
+        "",
+        f"- Тактов выше бюджета: **{over}/{len(samples)} ({pct_over:.2f}%)** — {verdict}",
+        f"- Среднее число задач на такт: {statistics.fmean(n_tasks):.1f} "
+        f"(max {max(n_tasks)})",
+        "",
+        "## Последние 20 тактов",
+        "",
+        "| tick | tasks | t_perc | t_dij | t_util | t_total |",
+        "|---|---|---|---|---|---|",
+    ]
+    for tick, n, tp, td, tu, tt in samples[-20:]:
+        lines.append(f"| {tick} | {n} | {tp:.2f} | {td:.2f} | {tu:.2f} | {tt:.2f} |")
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _entity_world_position(entity: VisibleEntity, world_model: WorldModel) -> tuple[int, int] | None:
@@ -135,18 +226,12 @@ def run_field_agent(
 
     last_processed_tick: int = -1
 
-    # Трекер прогресса расчистки завалов полицейским:
-    # blockade_id → (последний известный repair_cost, кол-во попыток AKClear
-    # без снижения стоимости). Инкрементируем ТОЛЬКО тот завал, по которому
-    # в этом такте реально был отправлен AKClear (возвращается из
-    # dispatch_action/try_clear_local_blockade). Иначе счётчик рос у всех
-    # известных завалов сразу и они ложно помечались как безнадёжные.
-    clear_progress: dict[int, tuple[int, int]] = {}
-    # skip_clear_blockades: blockade_id → такт, на котором завал отправлен
-    # в skip-список. Через CLEAR_SKIP_EXPIRE_TICKS запись выбрасывается,
-    # и агент получает шанс попробовать завал заново (он мог попасть
-    # в skip из-за временных причин — агент был далёк от полигона и т.п.).
-    skip_clear_blockades: dict[int, int] = {}
+    # Замеры производительности матмодели (см. _write_time_report).
+    time_samples: list[tuple[int, int, float, float, float, float]] = []
+
+    # Шаг 10: память услышанных целей союзников для разведения пожарных.
+    # target_id → last_heard_tick. Истечение — RECENT_ALLY_TARGET_TICKS.
+    recent_allies_targets: dict[int, int] = {}
 
     try:
         while True:
@@ -234,7 +319,9 @@ def run_field_agent(
                 )
 
             try:
-                filtered_tasks = dispatcher.filter_tasks(agent_state, type_relevant)
+                filtered_tasks = dispatcher.filter_tasks(
+                    agent_state, type_relevant, world_model=world_model,
+                )
             except NeedRefugeException:
                 logger.info("Я отправляю пожарного в убежище: нет воды")
                 refuge_path = nearest_refuge_path(
@@ -246,6 +333,7 @@ def run_field_agent(
                     client.send_rest(packet.tick)
                 continue
 
+            t_util_start = time.perf_counter()
             utilities: dict[int, float] = {}
             for entity in filtered_tasks:
                 try:
@@ -304,7 +392,10 @@ def run_field_agent(
                     agent_state.id, utility, entity.id,
                 )
 
+            t_util = time.perf_counter() - t_util_start
+
             for tid in packet.heard_target_ids:
+                recent_allies_targets[tid] = packet.tick
                 if tid in utilities and tid != current_target_id:
                     old_u = utilities[tid]
                     # Я вычитаю штраф аддитивно: умножение ломало знак при U<0,
@@ -314,6 +405,21 @@ def run_field_agent(
                         "Я снизил U для target_id=%d: %.4f → %.4f (занята другим)",
                         tid, old_u, utilities[tid],
                     )
+
+            # Шаг 10: FIRE_BRIGADE — дополнительный долгосрочный штраф для
+            # целей, услышанных в последние RECENT_ALLY_TARGET_TICKS тактов.
+            # Это разводит пожарных по разным очагам, когда несколько зданий
+            # одинаково привлекательны.
+            if agent_type == AgentType.FIRE_BRIGADE:
+                expired = [
+                    t for t, last in recent_allies_targets.items()
+                    if packet.tick - last > RECENT_ALLY_TARGET_TICKS
+                ]
+                for t in expired:
+                    recent_allies_targets.pop(t, None)
+                for tid in list(recent_allies_targets.keys()):
+                    if tid in utilities and tid != current_target_id:
+                        utilities[tid] -= ALLY_TARGET_LONGTERM_PENALTY
 
             is_stuck = selector.report_progress(current_target_id, agent_node_id, packet.tick)
             if is_stuck:
@@ -328,39 +434,15 @@ def run_field_agent(
             elif not is_stuck:
                 logger.info("Я выбрал/сохраняю цель target_id=%s, такт=%d", current_target_id, packet.tick)
 
-            # Истекаю skip-записи: через CLEAR_SKIP_EXPIRE_TICKS даю
-            # полицейскому шанс повторно попробовать расчистить завал —
-            # он мог попасть в skip из-за временной проблемы (например,
-            # полицейский был далеко от полигона на тот момент).
-            if agent_type == AgentType.POLICE_FORCE and skip_clear_blockades:
-                for blk_id in [
-                    b for b, t in skip_clear_blockades.items()
-                    if packet.tick - t >= CLEAR_SKIP_EXPIRE_TICKS
-                ]:
-                    del skip_clear_blockades[blk_id]
-                    clear_progress.pop(blk_id, None)
-                    logger.info(
-                        "Я снимаю skip с blockade_id=%d после %d тактов, "
-                        "tick=%d", blk_id, CLEAR_SKIP_EXPIRE_TICKS, packet.tick,
-                    )
-
-            # Выбрасываю из трекера завалы, пропавшие из кэша (уже расчищены).
-            if agent_type == AgentType.POLICE_FORCE:
-                for blk_id in list(clear_progress.keys()):
-                    if blk_id not in world_model.tasks:
-                        clear_progress.pop(blk_id, None)
-                        skip_clear_blockades.pop(blk_id, None)
-
             try:
                 # Я сначала пробую выполнить целевое действие, а если цель
                 # сброшена (или её не было) — перехожу к исследованию на
                 # том же такте. Это устраняет «потерянный такт»: раньше при
                 # сбросе цели агент отправлял AKRest и ждал следующего такта.
                 action_sent = False
-                attempted_clear_id: int | None = None
 
                 if current_target_id is not None:
-                    target_valid, unreachable, working, attempted_clear_id = dispatch_action(
+                    target_valid, unreachable, working, _attempted = dispatch_action(
                         client=client,
                         agent_type=agent_type,
                         agent_state=agent_state,
@@ -368,7 +450,6 @@ def run_field_agent(
                         target_id=current_target_id,
                         agent_node_id=agent_node_id,
                         world_model=world_model,
-                        skip_blockades=skip_clear_blockades,
                     )
                     if unreachable:
                         selector.blacklist_unreachable(current_target_id, packet.tick)
@@ -387,14 +468,12 @@ def run_field_agent(
                     # Полицейский без цели: расчищаю ближайший завал вместо
                     # бесполезной попытки AKMove сквозь блокаду.
                     if agent_type == AgentType.POLICE_FORCE:
-                        sent, tcb_attempted = try_clear_local_blockade(
+                        sent, _ = try_clear_local_blockade(
                             client, packet.tick, agent_node_id, world_model,
                             agent_state=agent_state,
-                            skip_blockades=skip_clear_blockades,
                         )
                         if sent:
                             action_sent = True
-                            attempted_clear_id = tcb_attempted
 
                 if not action_sent:
                     exploration_target_node, exploration_start_tick = _explore_and_update(
@@ -403,42 +482,13 @@ def run_field_agent(
                         exploration_target_node, exploration_start_tick,
                     )
 
-                # Обновляю трекер прогресса ТОЛЬКО для завала, по которому
-                # в этом такте реально был отправлен AKClear. Раньше трекер
-                # штрафовал все известные завалы одинаково — и далёкие, и
-                # не атакованные, — из-за чего десятки завалов попадали
-                # в skip ложно уже на 7-м такте симуляции.
-                if (
-                    agent_type == AgentType.POLICE_FORCE
-                    and attempted_clear_id is not None
-                ):
-                    blk_ent = world_model.tasks.get(attempted_clear_id)
-                    cur_cost = (
-                        blk_ent.raw_sensor_data.repair_cost
-                        if blk_ent is not None else None
-                    )
-                    if cur_cost is not None:
-                        prev = clear_progress.get(attempted_clear_id)
-                        if prev is None:
-                            clear_progress[attempted_clear_id] = (cur_cost, 0)
-                        else:
-                            prev_cost, stale_count = prev
-                            if cur_cost < prev_cost:
-                                clear_progress[attempted_clear_id] = (cur_cost, 0)
-                                skip_clear_blockades.pop(attempted_clear_id, None)
-                            else:
-                                new_stale = stale_count + 1
-                                clear_progress[attempted_clear_id] = (prev_cost, new_stale)
-                                if new_stale >= MAX_CLEAR_STALE_TICKS:
-                                    skip_clear_blockades[attempted_clear_id] = packet.tick
-                                    logger.warning(
-                                        "Я пропускаю завал blockade_id=%d: "
-                                        "repair_cost=%d не снижается %d попыток "
-                                        "AKClear, пробую AKClearArea/объехать, "
-                                        "tick=%d",
-                                        attempted_clear_id, prev_cost,
-                                        new_stale, packet.tick,
-                                    )
+                # Устаревший stale-трекер расчистки удалён: apex-проверка
+                # пересечения пути в executor гарантирует, что агент не
+                # стоит на «не том» завале, а anti-stuck counter форсирует
+                # AKMove при повторе clear-точки. Бесконечный холостой
+                # цикл расчистки невозможен по построению. За «физическое»
+                # застревание по-прежнему отвечает TargetSelector
+                # (STUCK_TICKS → blacklist).
 
             except (ConnectionError, OSError) as exc:
                 logger.error("Я потерял соединение при отправке команды: %s", exc)
@@ -458,9 +508,31 @@ def run_field_agent(
                     packet.tick, tick_elapsed, t_perc, t_dij, len(type_relevant),
                 )
 
+            time_samples.append((
+                packet.tick, len(filtered_tasks),
+                t_perc * 1000.0, t_dij * 1000.0,
+                t_util * 1000.0, tick_elapsed * 1000.0,
+            ))
+            if packet.tick % TIME_REPORT_PERIOD == 0:
+                try:
+                    _write_time_report(
+                        TIME_REPORT_PATH, agent_state.id,
+                        agent_type.value, time_samples,
+                    )
+                except OSError as exc:
+                    logger.warning("Я не смог записать time.md: %s", exc)
+
     except KeyboardInterrupt:
         logger.info("Я получил сигнал остановки и завершаю работу")
     finally:
+        try:
+            _write_time_report(
+                TIME_REPORT_PATH,
+                agent_state.id if "agent_state" in locals() else -1,
+                agent_type.value, time_samples,
+            )
+        except (OSError, NameError) as exc:
+            logger.warning("Я не смог записать финальный time.md: %s", exc)
         client.disconnect()
 
 
@@ -474,8 +546,53 @@ def _handle_transport(
     from world.entities import PerceptionPacket
     pkt: PerceptionPacket = packet  # type: ignore[assignment]
 
-    refuge_path = nearest_refuge_path(
+    # Шаг 11: если перевозимый гражданский умер по дороге — немедленный unload,
+    # не тащим труп в убежище (аналог ADF `calc_unload` при hp==0).
+    # Ищу гражданского в кэше, чья position_on_edge == мой agent_id: сервер
+    # через PROP_POSITION помечает перевозимого этим способом.
+    my_id = pkt.own_state.id
+    for ent in world_model.tasks.values():
+        if ent.type != EntityType.CIVILIAN:
+            continue
+        if ent.raw_sensor_data.position_on_edge != my_id:
+            continue
+        hp = ent.raw_sensor_data.hp
+        if hp is not None and hp == 0:
+            client.send_unload(pkt.tick)
+            logger.info(
+                "Я выгружаю погибшего гражданского entity_id=%d на месте, "
+                "tick=%d (не везу в убежище)", ent.id, pkt.tick,
+            )
+            world_model.remove_task(ent.id)
+            return 0
+        break
+
+    # Шаг 13: пытаемся выбрать refuge с обратным путём к следующей
+    # перспективной цели. «Следующая цель» для амбуланса — любой
+    # откопанный раненый гражданский не в убежище; если таких нет,
+    # просто ближайший refuge.
+    next_target_node: int | None = None
+    if pkt.own_state.type == AgentType.AMBULANCE_TEAM:
+        for ent in world_model.tasks.values():
+            if ent.type != EntityType.CIVILIAN:
+                continue
+            raw = ent.raw_sensor_data
+            if raw.hp is not None and raw.hp == 0:
+                continue
+            if raw.buriedness is not None and raw.buriedness > 0:
+                continue
+            if raw.damage is None or raw.damage <= 0:
+                continue
+            pos = raw.position_on_edge
+            if pos is None or pos in world_model.refuge_ids:
+                continue
+            if world_model.road_graph.has_node(pos):
+                next_target_node = pos
+                break
+
+    refuge_path = choose_refuge_with_exit(
         world_model.road_graph, agent_node_id, world_model.refuge_ids,
+        next_target_node,
     )
     if refuge_path:
         refuge_node = refuge_path[-1]

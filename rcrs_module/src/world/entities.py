@@ -70,6 +70,10 @@ class RawSensorData(BaseEntityModel):
     ground_area: Optional[StrictInt] = Field(default=None, ge=0)
     repair_cost: Optional[StrictInt] = Field(default=None, ge=0)
     position_on_edge: Optional[StrictInt] = Field(default=None, ge=0)
+    # Плоский массив координат вершин полигона: [x0, y0, x1, y1, ...].
+    # Приходит для Blockade (PROP_APEXES) и Area-сущностей; используется
+    # геометрическими проверками в action/police_geometry.py.
+    apexes: Optional[List[StrictInt]] = Field(default=None)
 
 
 class ComputedMetrics(BaseEntityModel):
@@ -86,12 +90,22 @@ class VisibleEntity(BaseEntityModel):
     utility_score: StrictFloat
     entity_x: Optional[StrictInt] = Field(default=None)
     entity_y: Optional[StrictInt] = Field(default=None)
+    # True — если это союзный полевой агент (FireBrigade/AmbulanceTeam/PoliceForce),
+    # который в данный момент попал в кэш как VisibleEntity (например, завален
+    # и нуждается в спасении). Мирное население — всегда is_ally=False.
+    # Нужен для валидации: AKLoad только на CIVILIAN; пожарный не приоритезирует
+    # союзников-пожарных для AKRescue перед гражданскими и т.п.
+    is_ally: StrictBool = Field(default=False)
 
 
 class MapNode(BaseEntityModel):
     entity_id: StrictInt = Field(..., ge=0)
     x: StrictInt
     y: StrictInt
+    # Плоский массив координат вершин полигона Area [x0, y0, x1, y1, ...].
+    # Нужен для проверки пересечения линии «агент → следующий узел»
+    # с границами road (intersects_area_edge).
+    apexes: Optional[List[StrictInt]] = Field(default=None)
 
 
 class MapEdge(BaseEntityModel):

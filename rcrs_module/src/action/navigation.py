@@ -169,6 +169,58 @@ def nearest_refuge_path(
     return best_path
 
 
+def choose_refuge_with_exit(
+    graph: nx.Graph,
+    from_id: int,
+    refuge_ids: list[int],
+    next_target_node: int | None,
+) -> list[int]:
+    """Шаг 13: выбирает refuge с проверкой обратного маршрута к следующей цели.
+
+    Перебирает refuges в порядке возрастания расстояния от агента; для
+    каждого проверяет, существует ли путь `refuge → next_target_node`.
+    Возвращает путь к первому подходящему refuge. Если `next_target_node`
+    не задан или все refuges «тупиковые» — fallback на `nearest_refuge_path`.
+
+    Аналог `_calc_rest` в ADF `DefaultExtendActionClear`.
+    """
+    if not refuge_ids:
+        return []
+    if next_target_node is None or not graph.has_node(next_target_node):
+        return nearest_refuge_path(graph, from_id, refuge_ids)
+
+    # Собираем все достижимые refuges с их дистанциями и сортируем.
+    scored: list[tuple[float, int, list[int]]] = []
+    for refuge_id in refuge_ids:
+        path = compute_path(graph, from_id, refuge_id)
+        if not path:
+            continue
+        dist = sum(
+            graph[u][v].get("weight", 1.0) for u, v in zip(path, path[1:])
+        )
+        scored.append((dist, refuge_id, path))
+
+    scored.sort(key=lambda s: s[0])
+
+    for dist, refuge_id, path in scored:
+        exit_path = compute_path(graph, refuge_id, next_target_node)
+        if exit_path:
+            logger.info(
+                "Я выбрал refuge_id=%d с проверкой exit→node=%d, "
+                "дистанция=%.1f мм", refuge_id, next_target_node, dist,
+            )
+            return path
+
+    # Ни один refuge не даёт обратного пути — берём ближайший как fallback.
+    if scored:
+        logger.info(
+            "Я не нашёл refuge с exit→node=%d, fallback на ближайший",
+            next_target_node,
+        )
+        return scored[0][2]
+    return []
+
+
 def random_walk(
     graph: nx.Graph,
     start_node: int,
@@ -276,6 +328,7 @@ __all__ = [
     "compute_path_distance",
     "fill_path_distances",
     "nearest_refuge_path",
+    "choose_refuge_with_exit",
     "random_walk",
     "pick_exploration_target",
     "plan_exploration_path",
