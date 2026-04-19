@@ -164,19 +164,6 @@ class PreFilterDispatcher:
                 if buriedness is None or buriedness <= 0:
                     return False
 
-            if agent_type == AgentType.AMBULANCE_TEAM:
-                if (
-                    buriedness is not None
-                    and buriedness > 0
-                    and has_live_fire_brigades
-                ):
-                    logger.debug(
-                        "Я исключаю заваленного из задач амбуланса "
-                        "(это для пожарных): entity_id=%s, buriedness=%s",
-                        entity.id, buriedness,
-                    )
-                    return False
-
         if entity.type == EntityType.HUMAN:
             if hp is not None and hp == 0:
                 logger.debug("Я исключаю погибшего агента: entity_id=%s", entity.id)
@@ -196,9 +183,6 @@ class PreFilterDispatcher:
             if agent_type == AgentType.FIRE_BRIGADE:
                 if damage is None or damage <= 0:
                     return False
-
-            if agent_type == AgentType.AMBULANCE_TEAM and has_live_fire_brigades:
-                return False
 
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
@@ -226,31 +210,6 @@ class PreFilterDispatcher:
                 UNREACHABLE_DISTANCE_THRESHOLD,
             )
             return False
-
-        if entity.raw_sensor_data.buriedness is not None:
-            if self.work_rate <= 0:
-                raise ValueError("Я получил неположительную скорость работ")
-
-            try:
-                t_travel = entity.computed_metrics.path_distance / self.average_speed
-            except ZeroDivisionError:
-                t_travel = 0.0
-
-            time_to_action = t_travel + (
-                entity.raw_sensor_data.buriedness / self.work_rate
-            )
-            if entity.computed_metrics.estimated_death_time < (
-                time_to_action + ESTIMATED_TRIP_TO_REFUGE
-            ):
-                logger.debug(
-                    "Я исключаю обреченного (не довезет живым): entity_id=%s, "
-                    "estimated_death=%d, time_to_action=%.1f, trip_to_refuge=%.1f",
-                    entity.id,
-                    entity.computed_metrics.estimated_death_time,
-                    time_to_action,
-                    ESTIMATED_TRIP_TO_REFUGE,
-                )
-                return False
 
         return True
 

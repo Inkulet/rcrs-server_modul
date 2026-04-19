@@ -53,15 +53,13 @@ class TestCivilianFiltering:
         assert entity in result
 
     def test_civilian_with_buriedness_filtered_for_ambulance(self) -> None:
-        """Я проверяю: завалённого гражданского амбуланс НЕ берёт, если есть
-        пожарные — это зона их ответственности (Шаг 14 плана)."""
+        """Я проверяю: завалённого гражданского амбуланс теперь тоже может брать."""
         agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
         entity = make_civilian(
             hp=10000, damage=0, buriedness=5, path_distance=10.0, estimated_death_time=9999
         )
-        # Без world_model has_live_fire_brigades=True по умолчанию → отсев.
         result = make_dispatcher().filter_tasks(agent, [entity])
-        assert entity not in result
+        assert entity in result
 
     def test_buried_civilian_kept_for_fire_brigade(self) -> None:
         """Я проверяю: заваленного гражданского пожарный берёт (для AKRescue).
@@ -83,11 +81,11 @@ class TestCivilianFiltering:
         assert entity in result
 
     def test_buried_ally_filtered_for_ambulance(self) -> None:
-        """Я проверяю: заваленного союзника амбуланс НЕ берёт — пусть откопают пожарные."""
+        """Я проверяю: заваленного союзника амбуланс тоже может брать в rescue-очередь."""
         agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
         entity = make_human(hp=10000, damage=0, buriedness=5, estimated_death_time=9999)
         result = make_dispatcher().filter_tasks(agent, [entity])
-        assert entity not in result
+        assert entity in result
 
     def test_unburied_agent_filtered_for_ambulance(self) -> None:
         """Я проверяю: незавалённого спасателя скорая не выбирает как задачу."""
@@ -140,13 +138,11 @@ class TestBuildingFiltering:
 
 
 class TestDeadlineFiltering:
-    """Я проверяю условие TTL <= t_travel + t_work из диплома."""
+    """Я проверяю, что жёсткий TTL-отсев больше не выкидывает жертв заранее."""
 
     def test_deadline_exceeded_filtered(self) -> None:
-        """Я проверяю: estimated_death_time <= path_distance + buriedness/rate → отсеивается."""
+        """Я проверяю: жертва остаётся в выборке, даже если TTL выглядит плохим."""
         agent = make_agent(agent_type=AgentType.AMBULANCE_TEAM)
-        # path_distance=100, buriedness=50, rate=1.0 → time_to_action=150
-        # estimated_death_time=100 ≤ 150 → не успеть
         entity = make_civilian(
             hp=10000,
             damage=50,
@@ -155,7 +151,7 @@ class TestDeadlineFiltering:
             estimated_death_time=100,
         )
         result = make_dispatcher(work_rate=1.0).filter_tasks(agent, [entity])
-        assert result == []
+        assert entity in result
 
     def test_deadline_not_exceeded_kept(self) -> None:
         """Я проверяю: estimated_death_time > time_to_action → успеваем → задача остаётся.

@@ -340,6 +340,15 @@ def parse_ka_connect_ok(
             if urn in _AREA_URNS:
                 x = props[PROP_X].intValue if PROP_X in props else 0
                 y = props[PROP_Y].intValue if PROP_Y in props else 0
+                area_type = None
+                if urn == ENT_ROAD:
+                    area_type = "ROAD"
+                elif urn == ENT_REFUGE:
+                    area_type = "REFUGE"
+                elif urn == ENT_HYDRANT:
+                    area_type = "HYDRANT"
+                else:
+                    area_type = "BUILDING"
                 area_apexes: Optional[list[int]] = None
                 if PROP_APEXES in props and props[PROP_APEXES].defined:
                     try:
@@ -348,7 +357,15 @@ def parse_ka_connect_ok(
                             area_apexes = apexes_values
                     except (AttributeError, TypeError):
                         pass
-                map_nodes.append(MapNode(entity_id=eid, x=x, y=y, apexes=area_apexes))
+                map_nodes.append(
+                    MapNode(
+                        entity_id=eid,
+                        x=x,
+                        y=y,
+                        area_type=area_type,
+                        apexes=area_apexes,
+                    )
+                )
                 node_coords[eid] = (x, y)
                 _entity_protos_area.append((eid, urn, props))
 

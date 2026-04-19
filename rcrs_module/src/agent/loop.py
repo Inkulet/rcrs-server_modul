@@ -30,6 +30,7 @@ from action.navigation import (
     choose_refuge_with_exit,
     fill_path_distances,
     nearest_refuge_path,
+    pick_search_target,
     pick_exploration_target,
     plan_exploration_path,
     random_walk,
@@ -253,6 +254,14 @@ def run_field_agent(
                 continue
 
             metrics.gauge("filtered_tasks", len(filtered_tasks))
+
+            if agent_type == AgentType.FIRE_BRIGADE:
+                rescue_tasks = [
+                    entity for entity in filtered_tasks
+                    if entity.type in (EntityType.CIVILIAN, EntityType.HUMAN)
+                ]
+                if rescue_tasks:
+                    filtered_tasks = rescue_tasks
 
             with metrics.phase("utility"):
               utilities: dict[int, float] = {}
@@ -527,6 +536,30 @@ def _explore_and_update(
     from world.entities import AgentState, PerceptionPacket
     pkt: PerceptionPacket = packet  # type: ignore[assignment]
     state: AgentState = agent_state  # type: ignore[assignment]
+
+    if state.type in (AgentType.FIRE_BRIGADE, AgentType.AMBULANCE_TEAM):
+        search_target = exploration_target_node
+        if (
+            search_target is None
+            or search_target == agent_node_id
+            or not world_model.road_graph.has_node(search_target)
+            or world_model.road_graph.nodes[search_target].get("area_type") != "BUILDING"
+        ):
+            search_target = pick_search_target(
+                world_model.road_graph, agent_node_id, visited=visited_nodes,
+            )
+        if search_target is not None:
+            search_path = plan_exploration_path(
+                world_model.road_graph, agent_node_id, search_target,
+                max_steps=EXPLORATION_PATH_LENGTH,
+            )
+            if search_path and len(search_path) > 1:
+                client.send_move(pkt.tick, search_path)
+                logger.info(
+                    "Я иду к зданию для поиска пострадавших node=%d: %d шагов, такт=%d",
+                    search_target, len(search_path), pkt.tick,
+                )
+                return search_target, pkt.tick
 
     need_new = (
         exploration_target_node is None

@@ -11,6 +11,7 @@ from action.navigation import (
     compute_path_distance,
     fill_path_distances,
     nearest_refuge_path,
+    pick_search_target,
 )
 from world.entities import (
     ComputedMetrics,
@@ -30,9 +31,9 @@ def linear_graph() -> nx.Graph:
     """Я создаю граф из четырёх узлов по прямой линии: 1 - 2 - 3 - 4."""
     g = nx.Graph()
     g.add_node(1, x=0,    y=0)
-    g.add_node(2, x=1000, y=0)
-    g.add_node(3, x=2000, y=0)
-    g.add_node(4, x=3000, y=0)
+    g.add_node(2, x=1000, y=0, area_type="ROAD")
+    g.add_node(3, x=2000, y=0, area_type="BUILDING")
+    g.add_node(4, x=3000, y=0, area_type="BUILDING")
     g.add_edge(1, 2, weight=1000.0)
     g.add_edge(2, 3, weight=1000.0)
     g.add_edge(3, 4, weight=1000.0)
@@ -200,3 +201,13 @@ class TestNearestRefugePath:
         """Я проверяю, что агент уже в убежище возвращает путь из одного узла."""
         path = nearest_refuge_path(linear_graph, from_id=2, refuge_ids=[2])
         assert path == [2]
+
+
+class TestPickSearchTarget:
+    def test_prefers_nearest_unvisited_building(self, linear_graph: nx.Graph) -> None:
+        target = pick_search_target(linear_graph, start_node=1, visited={3})
+        assert target == 4
+
+    def test_returns_nearest_building_when_none_visited(self, linear_graph: nx.Graph) -> None:
+        target = pick_search_target(linear_graph, start_node=1, visited=set())
+        assert target == 3

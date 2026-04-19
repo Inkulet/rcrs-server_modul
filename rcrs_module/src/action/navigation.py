@@ -210,6 +210,56 @@ def choose_refuge_with_exit(
     return []
 
 
+def pick_search_target(
+    graph: nx.Graph,
+    start_node: int,
+    visited: set[int] | None = None,
+) -> int | None:
+    if not graph.has_node(start_node):
+        logger.warning("Я не нашёл start_node=%d в графе для search target", start_node)
+        return None
+
+    try:
+        dist_map: dict[int, float] = nx.single_source_dijkstra_path_length(
+            graph, start_node, weight="weight"
+        )
+    except nx.NodeNotFound:
+        logger.warning(
+            "Я не нашёл start_node=%d при расчёте дистанций для search target",
+            start_node,
+        )
+        return None
+
+    candidates: list[int] = [
+        node_id
+        for node_id, attrs in graph.nodes(data=True)
+        if attrs.get("area_type") == "BUILDING" and node_id in dist_map
+    ]
+    if not candidates:
+        logger.debug("Я не нашёл building-узлов для целевого поиска")
+        return None
+
+    if visited is not None:
+        unvisited = [node_id for node_id in candidates if node_id not in visited]
+        if unvisited:
+            candidates = unvisited
+
+    best_target: int | None = None
+    best_distance: float = float("inf")
+    for node_id in candidates:
+        distance = dist_map[node_id]
+        if distance < best_distance:
+            best_distance = distance
+            best_target = node_id
+
+    if best_target is not None:
+        logger.debug(
+            "Я выбрал search target=%d (dist=%.0f, candidates=%d)",
+            best_target, best_distance, len(candidates),
+        )
+    return best_target
+
+
 def random_walk(
     graph: nx.Graph,
     start_node: int,
@@ -318,6 +368,7 @@ __all__ = [
     "fill_path_distances",
     "nearest_refuge_path",
     "choose_refuge_with_exit",
+    "pick_search_target",
     "random_walk",
     "pick_exploration_target",
     "plan_exploration_path",

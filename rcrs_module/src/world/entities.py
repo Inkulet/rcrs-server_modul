@@ -102,6 +102,7 @@ class MapNode(BaseEntityModel):
     entity_id: StrictInt = Field(..., ge=0)
     x: StrictInt
     y: StrictInt
+    area_type: Optional[str] = Field(default=None)
     # Плоский массив координат вершин полигона Area [x0, y0, x1, y1, ...].
     # Нужен для проверки пересечения линии «агент → следующий узел»
     # с границами road (intersects_area_edge).

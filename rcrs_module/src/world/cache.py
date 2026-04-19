@@ -75,7 +75,11 @@ class WorldModel:
         node_count = 0
         for node in nodes:
             self.road_graph.add_node(
-                node.entity_id, x=node.x, y=node.y, apexes=node.apexes,
+                node.entity_id,
+                x=node.x,
+                y=node.y,
+                area_type=node.area_type,
+                apexes=node.apexes,
             )
             node_count += 1
 
