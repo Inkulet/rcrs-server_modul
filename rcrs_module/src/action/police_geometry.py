@@ -10,11 +10,6 @@ def nearest_apex(
     agent_xy: tuple[float, float],
     apexes: Sequence[int] | None,
 ) -> Optional[tuple[int, int, float]]:
-    """Ближайшая вершина полигона к точке агента.
-
-    `apexes` — плоский массив [x0, y0, x1, y1, ...]. Возвращает (x, y, dist)
-    или None, если apex-ов нет или формат некорректный.
-    """
     if apexes is None or len(apexes) < 2:
         return None
 
@@ -41,11 +36,6 @@ def scale_clear_vector(
     target_xy: tuple[float, float],
     clear_distance: float,
 ) -> tuple[int, int]:
-    """Единичный вектор agent → target, отмасштабированный до clear_distance.
-
-    Возвращает абсолютные координаты (clear_x, clear_y) = agent + unit*clear_distance.
-    Аналог `_scale_clear` в ADF, но возвращает сразу точку назначения.
-    """
     ax, ay = agent_xy
     tx, ty = target_xy
     dx = tx - ax
@@ -55,6 +45,51 @@ def scale_clear_vector(
         return int(ax), int(ay)
     k = clear_distance / length
     return int(ax + dx * k), int(ay + dy * k)
+
+
+BACK_OFFSET: float = 510.0
+
+
+def scale_back_vector(
+    agent_xy: tuple[float, float],
+    target_xy: tuple[float, float],
+    back_distance: float = BACK_OFFSET,
+) -> tuple[int, int]:
+    ax, ay = agent_xy
+    tx, ty = target_xy
+    dx = tx - ax
+    dy = ty - ay
+    length = math.hypot(dx, dy)
+    if length <= 0:
+        return int(ax), int(ay)
+    k = back_distance / length
+    return int(ax - dx * k), int(ay - dy * k)
+
+
+def segment_crosses_edges(
+    line_start: tuple[float, float],
+    line_end: tuple[float, float],
+    apexes: Sequence[int] | None,
+) -> bool:
+    if apexes is None or len(apexes) < 4:
+        return False
+    try:
+        segment = LineString([line_start, line_end])
+    except (ValueError, TypeError):
+        return False
+    try:
+        for i in range(0, len(apexes) - 3, 2):
+            edge = LineString(
+                [
+                    (int(apexes[i]), int(apexes[i + 1])),
+                    (int(apexes[i + 2]), int(apexes[i + 3])),
+                ]
+            )
+            if segment.intersects(edge):
+                return True
+    except (ValueError, TypeError):
+        return False
+    return False
 
 
 def _apexes_to_polygon(apexes: Sequence[int] | None) -> Optional[Polygon]:
@@ -80,11 +115,8 @@ def intersects_blockade(
     line_end: tuple[float, float],
     blockade_apexes: Sequence[int] | None,
 ) -> bool:
-    """Пересекает ли отрезок (line_start → line_end) полигон завала."""
     poly = _apexes_to_polygon(blockade_apexes)
     if poly is None:
-        # Без apex-ов consider завал непересекающим — вызывающий код
-        # должен иметь fallback (дистанцию по координатам, например).
         return False
     try:
         line = LineString([line_start, line_end])
@@ -98,13 +130,6 @@ def intersects_area_edge(
     target_xy: tuple[float, float],
     area_apexes: Sequence[int] | None,
 ) -> bool:
-    """Пересекает ли линия «агент → target» границу area-полигона.
-
-    Если area — выпуклый road, то пересечение границы означает, что
-    хотя бы один конец линии лежит вне area. Используется для решения
-    «нужно ли вообще расчищать завал перед движением»: если линия не
-    выходит за границы текущего road, завал на другой стороне не мешает.
-    """
     poly = _apexes_to_polygon(area_apexes)
     if poly is None:
         return False
@@ -131,7 +156,10 @@ def point_inside_apexes(
 __all__ = [
     "nearest_apex",
     "scale_clear_vector",
+    "scale_back_vector",
+    "segment_crosses_edges",
     "intersects_blockade",
     "intersects_area_edge",
     "point_inside_apexes",
+    "BACK_OFFSET",
 ]

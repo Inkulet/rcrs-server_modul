@@ -13,12 +13,6 @@ class TargetSelector:
         self.c_switch = c_switch
 
         self._blacklisted_until: dict[int, int] = {}
-
-        # Я отслеживаю застревание не по «последний узел == текущий»,
-        # а через множество уже посещённых узлов для текущей цели.
-        # Это ловит осцилляции (агент прыгает A↔B между двумя узлами
-        # вокруг завала) — узел формально «меняется», но реального
-        # прогресса нет, потому что мы уже были в обоих.
         self._stuck_target: int | None = None
         self._seen_nodes_for_target: set[int] = set()
         self._stuck_counter: int = 0
@@ -100,9 +94,6 @@ class TargetSelector:
         if current_target_id is None:
             return False
 
-        # Я считаю прогрессом только посещение НОВОГО узла: осцилляция
-        # между двумя соседними узлами (типичный случай на узких улицах
-        # Kobe) больше не сбрасывает счётчик в 0.
         if current_node not in self._seen_nodes_for_target:
             self._seen_nodes_for_target.add(current_node)
             self._stuck_counter = 0

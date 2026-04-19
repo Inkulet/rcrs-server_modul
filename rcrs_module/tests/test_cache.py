@@ -208,6 +208,7 @@ class TestApplyPerception:
         edges: list[MapEdge] | None = None,
         refuge_ids: list[int] | None = None,
         deleted_ids: list[int] | None = None,
+        road_blockades: dict[int, list[int]] | None = None,
     ) -> PerceptionPacket:
         return PerceptionPacket(
             tick=tick,
@@ -218,6 +219,7 @@ class TestApplyPerception:
             map_edges=edges or [],
             refuge_ids=refuge_ids or [],
             deleted_entity_ids=deleted_ids or [],
+            road_blockades=road_blockades or {},
         )
 
     def test_builds_graph_on_tick_zero(self) -> None:
@@ -258,4 +260,19 @@ class TestApplyPerception:
         wm = WorldModel()
         # Удаление несуществующей сущности не бросает исключение.
         wm.apply_perception(self._packet(deleted_ids=[999]))
-        assert 999 not in wm.tasks
+
+    def test_road_blockades_remove_stale_cached_blockade(self) -> None:
+        wm = WorldModel()
+        stale = make_blockade(entity_id=77, repair_cost=1200)
+        stale = stale.model_copy(
+            update={
+                "raw_sensor_data": stale.raw_sensor_data.model_copy(
+                    update={"position_on_edge": 5},
+                ),
+            },
+        )
+        wm.tasks[77] = stale
+
+        wm.apply_perception(self._packet(road_blockades={5: []}))
+
+        assert 77 not in wm.tasks

@@ -16,6 +16,15 @@ _cfg.read(_CONFIG_PATH)
 LOG_ENABLED: bool = _cfg.getboolean("logging", "enabled", fallback=True)
 LOG_LEVEL: str    = _cfg.get("logging", "level", fallback="INFO").upper()
 
+# ---------------------------------------------------------------------------
+# Параметры сбора метрик
+# ---------------------------------------------------------------------------
+
+METRICS_ENABLED: bool = _cfg.getboolean("metrics", "enabled", fallback=True)
+METRICS_BUDGET_MS: float = _cfg.getfloat("metrics", "budget_ms", fallback=100.0)
+METRICS_REPORT_PERIOD: int = _cfg.getint("metrics", "report_period", fallback=25)
+METRICS_FILE: str = _cfg.get("metrics", "file", fallback="time.md")
+
 
 def setup_logging() -> None:
     if not LOG_ENABLED:
@@ -162,6 +171,11 @@ __all__ = [
     "LOG_ENABLED",
     "LOG_LEVEL",
     "setup_logging",
+    # Метрики
+    "METRICS_ENABLED",
+    "METRICS_BUDGET_MS",
+    "METRICS_REPORT_PERIOD",
+    "METRICS_FILE",
     # Подключение
     "KERNEL_HOST",
     "KERNEL_PORT",

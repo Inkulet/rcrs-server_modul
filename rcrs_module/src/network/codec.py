@@ -414,6 +414,7 @@ def parse_ka_sense(
     visible_entities: list[VisibleEntity] = []
     ally_states:       list[AgentState]   = []
     blockade_to_road: dict[int, int]      = {}
+    road_blockades: dict[int, list[int]]  = {}
 
     if COMP_UPDATES in proto.components:
         change_set: ChangeSetProto = proto.components[COMP_UPDATES].changeSet
@@ -488,10 +489,11 @@ def parse_ka_sense(
             if eurn == ENT_ROAD and PROP_BLOCKADES in props and props[PROP_BLOCKADES].defined:
                 try:
                     blk_ids = list(props[PROP_BLOCKADES].intList.values)
+                    road_blockades[eid] = blk_ids
                     for blk_id in blk_ids:
                         blockade_to_road[blk_id] = eid
                 except (AttributeError, TypeError):
-                    pass
+                    road_blockades[eid] = []
 
             entity_type = _ENTITY_URN_TO_ENTITY_TYPE.get(eurn)
             if entity_type is None:
@@ -592,6 +594,7 @@ def parse_ka_sense(
         deleted_entity_ids=deleted_ids,
         heard_target_ids=heard_target_ids,
         blockade_to_road=blockade_to_road,
+        road_blockades=road_blockades,
     )
 
     logger.debug(

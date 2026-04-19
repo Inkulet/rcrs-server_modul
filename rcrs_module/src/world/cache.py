@@ -218,6 +218,9 @@ class WorldModel:
                         road_id, blk_id,
                     )
 
+        if packet.road_blockades:
+            self._remove_stale_blockades(packet.road_blockades)
+
         for entity in packet.visible_entities:
             self.last_seen_tick[entity.id] = packet.tick
 
@@ -303,6 +306,26 @@ class WorldModel:
             self.tasks[entity.id] = merged_entity
             logger.info("Я обновил сущность в кэше: entity_id=%s", entity.id)
 
+    def _remove_stale_blockades(self, road_blockades: dict[int, list[int]]) -> None:
+        stale_ids: set[int] = set()
+        for road_id, current_ids in road_blockades.items():
+            current = set(current_ids)
+            for entity_id, entity in self.tasks.items():
+                if entity.type != EntityType.BLOCKADE:
+                    continue
+                if entity.raw_sensor_data.position_on_edge != road_id:
+                    continue
+                if entity_id in current:
+                    continue
+                stale_ids.add(entity_id)
+
+        for entity_id in stale_ids:
+            self.tasks.pop(entity_id, None)
+            self.last_seen_tick.pop(entity_id, None)
+            logger.info(
+                "Я удалил stale-завал entity_id=%d: он исчез из PROP_BLOCKADES дороги",
+                entity_id,
+            )
+
 
 __all__ = ["WorldModel"]
-
