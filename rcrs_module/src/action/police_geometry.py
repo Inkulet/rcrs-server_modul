@@ -47,6 +47,51 @@ def scale_clear_vector(
     return int(ax + dx * k), int(ay + dy * k)
 
 
+BACK_OFFSET: float = 510.0
+
+
+def scale_back_vector(
+    agent_xy: tuple[float, float],
+    target_xy: tuple[float, float],
+    back_distance: float = BACK_OFFSET,
+) -> tuple[int, int]:
+    ax, ay = agent_xy
+    tx, ty = target_xy
+    dx = tx - ax
+    dy = ty - ay
+    length = math.hypot(dx, dy)
+    if length <= 0:
+        return int(ax), int(ay)
+    k = back_distance / length
+    return int(ax - dx * k), int(ay - dy * k)
+
+
+def segment_crosses_edges(
+    line_start: tuple[float, float],
+    line_end: tuple[float, float],
+    apexes: Sequence[int] | None,
+) -> bool:
+    if apexes is None or len(apexes) < 4:
+        return False
+    try:
+        segment = LineString([line_start, line_end])
+    except (ValueError, TypeError):
+        return False
+    try:
+        for i in range(0, len(apexes) - 3, 2):
+            edge = LineString(
+                [
+                    (int(apexes[i]), int(apexes[i + 1])),
+                    (int(apexes[i + 2]), int(apexes[i + 3])),
+                ]
+            )
+            if segment.intersects(edge):
+                return True
+    except (ValueError, TypeError):
+        return False
+    return False
+
+
 def _apexes_to_polygon(apexes: Sequence[int] | None) -> Optional[Polygon]:
     if apexes is None or len(apexes) < 6:
         return None
@@ -111,7 +156,10 @@ def point_inside_apexes(
 __all__ = [
     "nearest_apex",
     "scale_clear_vector",
+    "scale_back_vector",
+    "segment_crosses_edges",
     "intersects_blockade",
     "intersects_area_edge",
     "point_inside_apexes",
+    "BACK_OFFSET",
 ]
