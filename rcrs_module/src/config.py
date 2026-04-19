@@ -16,6 +16,15 @@ _cfg.read(_CONFIG_PATH)
 LOG_ENABLED: bool = _cfg.getboolean("logging", "enabled", fallback=True)
 LOG_LEVEL: str    = _cfg.get("logging", "level", fallback="INFO").upper()
 
+# Я храню все логи/метрики в одном каталоге (по умолчанию <project_root>/log).
+# Путь нормализую в абсолютный и создаю каталог при setup_logging, чтобы
+# последующие writer-ы не заботились об отсутствии директории.
+_PROJECT_ROOT: Path = _CONFIG_PATH.resolve().parent.parent
+_raw_log_dir: str = _cfg.get("logging", "log_dir", fallback=str(_PROJECT_ROOT / "log"))
+LOG_DIR: Path = Path(_raw_log_dir).expanduser()
+if not LOG_DIR.is_absolute():
+    LOG_DIR = (_CONFIG_PATH.resolve().parent / LOG_DIR).resolve()
+
 # ---------------------------------------------------------------------------
 # Параметры сбора метрик
 # ---------------------------------------------------------------------------
@@ -25,19 +34,32 @@ METRICS_BUDGET_MS: float = _cfg.getfloat("metrics", "budget_ms", fallback=100.0)
 METRICS_REPORT_PERIOD: int = _cfg.getint("metrics", "report_period", fallback=25)
 METRICS_FILE: str = _cfg.get("metrics", "file", fallback="time.md")
 
+# Детализированные замеры (per-tick CSV, per-event CSV, session summary JSON).
+# Каждый тумблер независим, все файлы кладутся в LOG_DIR.
+TICK_CSV_ENABLED: bool = _cfg.getboolean("csv_metrics", "tick_csv_enabled", fallback=False)
+EVENTS_CSV_ENABLED: bool = _cfg.getboolean("csv_metrics", "events_csv_enabled", fallback=False)
+SUMMARY_JSON_ENABLED: bool = _cfg.getboolean("csv_metrics", "summary_json_enabled", fallback=False)
+
 
 def setup_logging() -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
     if not LOG_ENABLED:
         logging.disable(logging.CRITICAL)
         return
 
+    import os
     level: int = getattr(logging, LOG_LEVEL, logging.INFO)
+    debug_log_path = LOG_DIR / f"agent_debug_{os.getpid()}.log"
     logging.basicConfig(
         level=level,
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler("agent_debug.log", mode="a"),
+            logging.FileHandler(str(debug_log_path), mode="a"),
         ],
     )
 
@@ -175,12 +197,16 @@ __all__ = [
     # Логирование
     "LOG_ENABLED",
     "LOG_LEVEL",
+    "LOG_DIR",
     "setup_logging",
     # Метрики
     "METRICS_ENABLED",
     "METRICS_BUDGET_MS",
     "METRICS_REPORT_PERIOD",
     "METRICS_FILE",
+    "TICK_CSV_ENABLED",
+    "EVENTS_CSV_ENABLED",
+    "SUMMARY_JSON_ENABLED",
     # Подключение
     "KERNEL_HOST",
     "KERNEL_PORT",

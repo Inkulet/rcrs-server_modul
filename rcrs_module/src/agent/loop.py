@@ -10,10 +10,12 @@ from config import (
     ALLY_TARGET_LONGTERM_PENALTY,
     AVERAGE_SPEED,
     CLAIMED_TARGET_PENALTY,
+    EVENTS_CSV_ENABLED,
     EXPLORATION_MAX_TICKS,
     EXPLORATION_PATH_LENGTH,
     EXPLORATION_SEED_PRIME,
     LOG_DIAG_PERIOD,
+    LOG_DIR,
     METRICS_BUDGET_MS,
     METRICS_ENABLED,
     METRICS_FILE,
@@ -23,8 +25,14 @@ from config import (
     RECENT_ALLY_TARGET_TICKS,
     SAME_ROLE_CLAIM_PENALTY,
     SOCIAL_RADIUS,
+    SUMMARY_JSON_ENABLED,
     TICK_BUDGET_SECONDS,
+    TICK_CSV_ENABLED,
 )
+from decision.utility.distance import distance_factor_precomputed
+from decision.utility.effort import compute_effort
+from decision.utility.social import social_factor
+from decision.utility.urgency import compute_urgency
 from metrics import MetricsCollector
 from action.executor import dispatch_action, try_clear_local_blockade
 from action.navigation import (
@@ -53,7 +61,62 @@ from world.entities import AgentType, EntityType, Position, VisibleEntity
 
 logger = logging.getLogger(__name__)
 
-METRICS_REPORT_PATH: Path = Path(__file__).resolve().parents[2] / METRICS_FILE
+def _metrics_report_path(agent_type: AgentType) -> Path:
+    import os
+    stem = Path(METRICS_FILE).stem
+    suffix = Path(METRICS_FILE).suffix or ".md"
+    return LOG_DIR / f"{stem}_{agent_type.value}_{os.getpid()}{suffix}"
+
+
+METRICS_REPORT_PATH: Path = LOG_DIR / METRICS_FILE  # legacy, может перезаписываться одним из агентов
+
+
+def _build_metrics_paths(agent_type: AgentType) -> tuple[Path | None, Path | None, Path | None]:
+    import os
+    pid = os.getpid()
+    tag = f"{agent_type.value}_{pid}"
+    tick_path = (LOG_DIR / f"tick_{tag}.csv") if TICK_CSV_ENABLED else None
+    events_path = (LOG_DIR / f"events_{tag}.csv") if EVENTS_CSV_ENABLED else None
+    summary_path = (LOG_DIR / f"summary_{tag}.json") if SUMMARY_JSON_ENABLED else None
+    return tick_path, events_path, summary_path
+
+
+def _count_filter_breakdown(
+    type_relevant: list[VisibleEntity],
+    dispatcher: PreFilterDispatcher,
+    agent_state,
+) -> tuple[int, int, int]:
+    # Побочный пересчёт только для метрик воронки задач. Алгоритм принятия
+    # решений использует pre_filter отдельно и на этот подсчёт не смотрит.
+    n_ttl = 0
+    n_fier = 0
+    n_already = 0
+    for e in type_relevant:
+        raw = e.raw_sensor_data
+        if e.type in (EntityType.CIVILIAN, EntityType.HUMAN):
+            if raw.hp is not None and raw.hp == 0:
+                n_already += 1
+                continue
+            if (raw.damage == 0 and raw.buriedness == 0):
+                n_already += 1
+                continue
+            damage = raw.damage
+            if damage is not None and damage > 0 and raw.hp is not None:
+                ttl = raw.hp / damage
+                try:
+                    t_travel = e.computed_metrics.path_distance / dispatcher.average_speed
+                except ZeroDivisionError:
+                    t_travel = 0.0
+                try:
+                    t_work = 0.0 if raw.buriedness is None else raw.buriedness / dispatcher.work_rate
+                except ZeroDivisionError:
+                    t_work = 0.0
+                if ttl <= t_travel + t_work:
+                    n_ttl += 1
+        elif e.type == EntityType.BUILDING:
+            if raw.fieryness is not None and raw.fieryness not in {1, 2, 3}:
+                n_fier += 1
+    return n_ttl, n_fier, n_already
 
 
 def _entity_world_position(entity: VisibleEntity, world_model: WorldModel) -> tuple[int, int] | None:
@@ -145,10 +208,28 @@ def run_field_agent(
 
     last_processed_tick: int = -1
 
+    tick_csv_path, events_csv_path, summary_json_path = _build_metrics_paths(agent_type)
+    collector_enabled = (
+        METRICS_ENABLED or TICK_CSV_ENABLED
+        or EVENTS_CSV_ENABLED or SUMMARY_JSON_ENABLED
+    )
     metrics = MetricsCollector(
-        enabled=METRICS_ENABLED, budget_ms=METRICS_BUDGET_MS,
+        enabled=collector_enabled, budget_ms=METRICS_BUDGET_MS,
+        tick_csv_path=tick_csv_path,
+        events_csv_path=events_csv_path,
+        summary_json_path=summary_json_path,
+        budget_total_ms=TICK_BUDGET_SECONDS * 1000.0,
     )
     client.set_metrics(metrics)
+
+    # Фиксирую текущие веса агрегатора один раз в session — они идут в
+    # per-tick CSV (для ablation) и в summary.json (ablation_config).
+    metrics.set_tick_fields(
+        w_c=aggregator.w_c, w_d=aggregator.w_d,
+        w_e=aggregator.w_e, w_n=aggregator.w_n,
+    )
+
+    _session_weights = (aggregator.w_c, aggregator.w_d, aggregator.w_e, aggregator.w_n)
 
     recent_target_claims: dict[int, tuple[int, int, int]] = {}
     own_say_role = AGENT_TYPE_TO_SAY_ROLE.get(agent_type, SAY_ROLE_UNKNOWN)
@@ -165,6 +246,10 @@ def run_field_agent(
                 break
 
             metrics.start_tick()
+            metrics.set_tick_fields(
+                w_c=_session_weights[0], w_d=_session_weights[1],
+                w_e=_session_weights[2], w_n=_session_weights[3],
+            )
 
             if last_processed_tick >= 0 and packet.tick - last_processed_tick > 1:
                 logger.warning(
@@ -181,6 +266,18 @@ def run_field_agent(
             agent_state   = packet.own_state
             agent_node_id = agent_state.position.entity_id
             visited_nodes.add(agent_node_id)
+
+            metrics.set_tick_fields(
+                agent_id=agent_state.id,
+                agent_type=agent_type.value,
+                pos_entity_id=agent_node_id,
+                pos_x=agent_state.position.x,
+                pos_y=agent_state.position.y,
+                hp=(agent_state.hp if agent_state.hp is not None else ""),
+                water_level=agent_state.resources.water_quantity,
+                is_transporting=int(agent_state.resources.is_transporting),
+                n_visible=len(packet.visible_entities),
+            )
 
             metrics.gauge("cache_size", len(world_model.tasks))
             metrics.gauge("visible_entities", len(packet.visible_entities))
@@ -240,6 +337,7 @@ def run_field_agent(
                 )
 
             metrics.gauge("type_relevant", len(type_relevant))
+            metrics.set_tick_field("n_type_relevant", len(type_relevant))
 
             if packet.tick % LOG_DIAG_PERIOD == 0 or type_relevant:
                 logger.info(
@@ -265,6 +363,15 @@ def run_field_agent(
                 continue
 
             metrics.gauge("filtered_tasks", len(filtered_tasks))
+            n_ttl_f, n_fier_f, n_already_f = _count_filter_breakdown(
+                type_relevant, dispatcher, agent_state,
+            )
+            metrics.set_tick_fields(
+                n_pre_filter_pass=len(filtered_tasks),
+                n_ttl_filtered=n_ttl_f,
+                n_fieryness_filtered=n_fier_f,
+                n_already_rescued_filtered=n_already_f,
+            )
 
             if agent_type == AgentType.FIRE_BRIGADE:
                 rescue_tasks = [
@@ -385,6 +492,93 @@ def run_field_agent(
                 if prev_target is not None and prev_target != current_target_id:
                     metrics.inc("target_switched")
 
+            target_changed = int(current_target_id != prev_target)
+            target_utility = utilities.get(current_target_id) if current_target_id is not None else None
+            prev_utility = utilities.get(prev_target) if prev_target is not None else None
+            if target_changed and (prev_target is not None or current_target_id is not None):
+                metrics.record_event(
+                    "target_change",
+                    tick=packet.tick, agent_id=agent_state.id,
+                    old_target=(prev_target if prev_target is not None else -1),
+                    new_target=(current_target_id if current_target_id is not None else -1),
+                    old_U=("" if prev_utility is None else round(prev_utility, 6)),
+                    new_U=("" if target_utility is None else round(target_utility, 6)),
+                    reason=("stuck" if is_stuck else "hysteresis"),
+                )
+            if is_stuck:
+                metrics.record_event(
+                    "stuck_detected",
+                    tick=packet.tick, agent_id=agent_state.id,
+                    position=agent_node_id,
+                )
+
+            # Разложение utility для выбранной цели (для ablation / CSV).
+            f_u = f_d = f_e = f_s = None
+            tgt_distance = None
+            if current_target_id is not None and current_target_id in utilities:
+                sel_entity = world_model.tasks.get(current_target_id)
+                if sel_entity is not None:
+                    try:
+                        t_travel_sel = sel_entity.computed_metrics.path_distance / AVERAGE_SPEED
+                    except ZeroDivisionError:
+                        t_travel_sel = 0.0
+                    bur_sel = sel_entity.raw_sensor_data.buriedness
+                    try:
+                        t_work_sel = 0.0 if bur_sel is None else bur_sel / dispatcher.work_rate
+                    except ZeroDivisionError:
+                        t_work_sel = 0.0
+                    if agent_type == AgentType.POLICE_FORCE:
+                        raw_min_d = _min_distance_blockade_to_important(sel_entity, world_model)
+                        td_sel = 1.0e9 if raw_min_d == float("inf") else raw_min_d / POLICE_URGENCY_DISTANCE_SCALE
+                    else:
+                        td_sel = sel_entity.computed_metrics.path_distance
+                    try:
+                        f_u = compute_urgency(
+                            agent_state, entity=sel_entity,
+                            t_travel=t_travel_sel, t_work=t_work_sel,
+                            task_distance=td_sel,
+                        )
+                        f_e = compute_effort(agent_state, entity=sel_entity)
+                        f_d = distance_factor_precomputed(
+                            sel_entity.computed_metrics.path_distance,
+                            max_map_distance=world_model.max_map_distance,
+                        )
+                        nav_sel = (
+                            sel_entity.raw_sensor_data.position_on_edge
+                            if sel_entity.raw_sensor_data.position_on_edge is not None
+                            else sel_entity.id
+                        )
+                        attrs_sel = world_model.road_graph.nodes.get(nav_sel, {})
+                        tgt_position_sel = Position(
+                            entity_id=nav_sel,
+                            x=int(attrs_sel.get("x", 0)),
+                            y=int(attrs_sel.get("y", 0)),
+                        )
+                        f_s = social_factor(
+                            world_model, tgt_position_sel, agent_state.type,
+                            current_agent_id=agent_state.id, radius=SOCIAL_RADIUS,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Я не смог разложить utility для метрик: %s", exc)
+                    tgt_distance = sel_entity.computed_metrics.path_distance
+
+            metrics.set_tick_fields(
+                target_id=(current_target_id if current_target_id is not None else -1),
+                target_id_prev=(prev_target if prev_target is not None else -1),
+                target_changed=target_changed,
+                target_utility=("" if target_utility is None else round(target_utility, 6)),
+                target_distance=("" if tgt_distance is None else round(tgt_distance, 2)),
+                U_total=("" if target_utility is None else round(target_utility, 6)),
+                f_urgency=("" if f_u is None else round(f_u, 6)),
+                f_dist=("" if f_d is None else round(f_d, 6)),
+                f_effort=("" if f_e is None else round(f_e, 6)),
+                f_social=("" if f_s is None else round(f_s, 6)),
+                is_stuck=int(bool(is_stuck)),
+                is_idle=int(current_target_id is None),
+                agent_status=("Transporting" if agent_state.resources.is_transporting
+                              else ("Idle" if current_target_id is None else "Moving")),
+            )
+
             if current_target_id is None:
                 logger.info("Я не нашёл задачи — перехожу в режим исследования, такт=%d", packet.tick)
             elif not is_stuck:
@@ -393,6 +587,7 @@ def run_field_agent(
             try:
                 action_sent = False
 
+                action_kind_dispatched: str = ""
                 if current_target_id is not None:
                     with metrics.phase("dispatch"):
                         target_valid, unreachable, working, _attempted = dispatch_action(
@@ -418,6 +613,14 @@ def run_field_agent(
                         action_sent = True
                         if working:
                             selector.reset_stuck()
+                            if agent_type == AgentType.FIRE_BRIGADE:
+                                action_kind_dispatched = "EXTINGUISH"
+                            elif agent_type == AgentType.AMBULANCE_TEAM:
+                                action_kind_dispatched = "RESCUE"
+                            else:
+                                action_kind_dispatched = "CLEAR"
+                        else:
+                            action_kind_dispatched = "MOVE"
 
                 if not action_sent:
                     if agent_type == AgentType.POLICE_FORCE:
@@ -428,6 +631,7 @@ def run_field_agent(
                             )
                         if sent:
                             action_sent = True
+                            action_kind_dispatched = "CLEAR"
 
                 if not action_sent:
                     with metrics.phase("explore"):
@@ -436,6 +640,9 @@ def run_field_agent(
                             world_model, visited_nodes,
                             exploration_target_node, exploration_start_tick,
                         )
+                    action_kind_dispatched = "MOVE"
+
+                metrics.set_tick_field("action_dispatched", action_kind_dispatched)
 
             except (ConnectionError, OSError) as exc:
                 logger.error("Я потерял соединение при отправке команды: %s", exc)
@@ -448,6 +655,10 @@ def run_field_agent(
                             SAY_KIND_TARGET_CLAIM, current_target_id, own_say_role,
                         )
                         client.send_say(packet.tick, say_data)
+                        metrics.record_communication(
+                            packet.tick, agent_state.id, len(say_data),
+                            kind="coord", channel="say",
+                        )
                     except (ConnectionError, OSError) as exc:
                         logger.warning("Я не смог отправить AKSay: %s", exc)
 
@@ -462,20 +673,24 @@ def run_field_agent(
 
             if packet.tick % METRICS_REPORT_PERIOD == 0:
                 metrics.write_report(
-                    METRICS_REPORT_PATH, agent_state.id, agent_type.value,
+                    _metrics_report_path(agent_type), agent_state.id, agent_type.value,
                 )
 
     except KeyboardInterrupt:
         logger.info("Я получил сигнал остановки и завершаю работу")
     finally:
+        final_agent_id = agent_state.id if "agent_state" in locals() else -1
         try:
             metrics.write_report(
-                METRICS_REPORT_PATH,
-                agent_state.id if "agent_state" in locals() else -1,
-                agent_type.value,
+                _metrics_report_path(agent_type), final_agent_id, agent_type.value,
             )
         except (OSError, NameError) as exc:
             logger.warning("Я не смог записать финальный отчёт метрик: %s", exc)
+        try:
+            metrics.write_summary_json(final_agent_id, agent_type.value)
+        except (OSError, NameError) as exc:
+            logger.warning("Я не смог записать summary.json: %s", exc)
+        metrics.close()
         client.disconnect()
 
 
