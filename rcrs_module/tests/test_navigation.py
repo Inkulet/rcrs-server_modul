@@ -99,6 +99,51 @@ class TestComputePath:
         path = compute_path(linear_graph, 1, 999)
         assert path == []
 
+    def test_reuses_cached_path_on_same_graph_revision(
+        self,
+        linear_graph: nx.Graph,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        linear_graph.graph["revision"] = 7
+        calls = {"count": 0}
+        original = nx.astar_path
+
+        def counted_astar(*args: object, **kwargs: object) -> list[int]:
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr("action.navigation.nx.astar_path", counted_astar)
+
+        first = compute_path(linear_graph, 1, 4)
+        second = compute_path(linear_graph, 1, 4)
+
+        assert first == [1, 2, 3, 4]
+        assert second == [1, 2, 3, 4]
+        assert calls["count"] == 1
+
+    def test_invalidates_cached_path_after_revision_change(
+        self,
+        linear_graph: nx.Graph,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        linear_graph.graph["revision"] = 11
+        calls = {"count": 0}
+        original = nx.astar_path
+
+        def counted_astar(*args: object, **kwargs: object) -> list[int]:
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr("action.navigation.nx.astar_path", counted_astar)
+
+        first = compute_path(linear_graph, 1, 4)
+        linear_graph.graph["revision"] = 12
+        second = compute_path(linear_graph, 1, 4)
+
+        assert first == [1, 2, 3, 4]
+        assert second == [1, 2, 3, 4]
+        assert calls["count"] == 2
+
 
 # ---------------------------------------------------------------------------
 # compute_path_distance

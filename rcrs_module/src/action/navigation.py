@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import random
+from collections import OrderedDict
 
 import networkx as nx
 
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 EXPLORATION_FAR_QUANTILE: float = 0.3
 
 EXPLORATION_MIN_DISTANCE: float = 30_000.0
+
+_PATH_CACHE_MAX_SIZE: int = 4096
+_PATH_CACHE: OrderedDict[tuple[int, int, int, int], tuple[int, ...]] = OrderedDict()
 
 
 def find_nearest_node(graph: nx.Graph, x: int, y: int) -> int | None:
@@ -40,16 +44,55 @@ def compute_path(
     if from_id == to_id:
         return [from_id]
 
+    graph_id = id(graph)
+    revision = int(graph.graph.get("revision", 0))
+    cache_key = (graph_id, revision, from_id, to_id)
+    cached = _PATH_CACHE.get(cache_key)
+    if cached is not None:
+        _PATH_CACHE.move_to_end(cache_key)
+        return list(cached)
+
+    reverse_key = (graph_id, revision, to_id, from_id)
+    reverse_cached = _PATH_CACHE.get(reverse_key)
+    if reverse_cached is not None:
+        _PATH_CACHE.move_to_end(reverse_key)
+        return list(reversed(reverse_cached))
+
+    def heuristic(node_id: int, goal_id: int) -> float:
+        node_attrs = graph.nodes.get(node_id, {})
+        goal_attrs = graph.nodes.get(goal_id, {})
+        nx_val = node_attrs.get("x")
+        ny_val = node_attrs.get("y")
+        gx_val = goal_attrs.get("x")
+        gy_val = goal_attrs.get("y")
+        if nx_val is None or ny_val is None or gx_val is None or gy_val is None:
+            return 0.0
+        return math.hypot(float(nx_val) - float(gx_val), float(ny_val) - float(gy_val))
+
     try:
-        path: list[int] = nx.astar_path(graph, from_id, to_id, weight="weight")
+        path: list[int] = nx.astar_path(
+            graph, from_id, to_id, heuristic=heuristic, weight="weight",
+        )
+        _remember_path(cache_key, path)
         logger.debug("Я нашёл путь от %d до %d: %d шагов", from_id, to_id, len(path))
         return path
     except nx.NetworkXNoPath:
+        _remember_path(cache_key, [])
         logger.warning("Я не нашёл пути от %d до %d — граф несвязный", from_id, to_id)
         return []
     except nx.NodeNotFound as exc:
         logger.warning("Я не нашёл узел в графе: %s", exc)
         return []
+
+
+def _remember_path(
+    cache_key: tuple[int, int, int, int],
+    path: list[int],
+) -> None:
+    _PATH_CACHE[cache_key] = tuple(path)
+    _PATH_CACHE.move_to_end(cache_key)
+    while len(_PATH_CACHE) > _PATH_CACHE_MAX_SIZE:
+        _PATH_CACHE.popitem(last=False)
 
 
 def compute_path_distance(

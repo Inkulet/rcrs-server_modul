@@ -25,6 +25,8 @@ class WorldModel:
         self.tasks: Dict[int, VisibleEntity] = {}
         self.last_seen_tick: Dict[int, int] = {}
         self.road_graph: nx.Graph = nx.Graph()
+        self.road_graph.graph["revision"] = 0
+        self.road_graph.graph["blockade_signature"] = frozenset()
 
         self.refuge_ids: list[int] = []
 
@@ -38,6 +40,11 @@ class WorldModel:
         self.blockades_by_node: Dict[int, set[int]] = {}
 
         logger.info("Я инициализировал пустую модель мира и граф дорожной сети")
+
+    def _bump_graph_revision(self) -> None:
+        revision = int(self.road_graph.graph.get("revision", 0)) + 1
+        self.road_graph.graph["revision"] = revision
+        logger.debug("Я повысил revision дорожного графа до %d", revision)
 
     def add_road_node(self, entity_id: int, **attrs: object) -> None:
         self.road_graph.add_node(entity_id, **attrs)
@@ -116,6 +123,7 @@ class WorldModel:
             node_count,
             edge_count,
         )
+        self._bump_graph_revision()
 
     def refresh_blockade_weights(self) -> None:
         for _u, _v, data in self.road_graph.edges(data=True):
@@ -128,6 +136,7 @@ class WorldModel:
         self.blockades_by_node.clear()
 
         penalized = 0
+        active_blockades: set[tuple[int, int, int]] = set()
         for entity in self.tasks.values():
             if entity.type != EntityType.BLOCKADE:
                 continue
@@ -158,6 +167,7 @@ class WorldModel:
                 continue
 
             self.blockades_by_node.setdefault(node_id, set()).add(entity.id)
+            active_blockades.add((entity.id, node_id, int(repair_cost or 0)))
 
             if not self.road_graph.has_node(node_id):
                 continue
@@ -176,6 +186,12 @@ class WorldModel:
 
         if penalized:
             logger.debug("Я пересчитал штрафы обхода завалов: обновлено %d рёбер", penalized)
+
+        signature = frozenset(active_blockades)
+        prev_signature = self.road_graph.graph.get("blockade_signature", frozenset())
+        if signature != prev_signature:
+            self.road_graph.graph["blockade_signature"] = signature
+            self._bump_graph_revision()
 
     def update_agents(self, ally_states: Iterable[AgentState]) -> None:
         for ally in ally_states:
