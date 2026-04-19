@@ -78,6 +78,7 @@ def fill_path_distances(
     graph: nx.Graph,
     agent_node_id: int,
     entities: list[VisibleEntity],
+    blockades_by_node: dict[int, set[int]] | None = None,
 ) -> list[VisibleEntity]:
     try:
         dist_map: dict[int, float] = nx.single_source_dijkstra_path_length(
@@ -100,7 +101,31 @@ def fill_path_distances(
                 if nearest is not None and nearest in dist_map:
                     nav_id = nearest
 
+        # Fallback: reverse lookup через blockades_by_node.
+        # Если завал не удалось привязать к графу через position_on_edge
+        # или entity_x/entity_y, ищем его в индексе «узел → завалы».
+        if nav_id not in dist_map and blockades_by_node:
+            for node_id, blk_set in blockades_by_node.items():
+                if entity.id in blk_set and node_id in dist_map:
+                    nav_id = node_id
+                    logger.debug(
+                        "Я привязал завал entity_id=%d к узлу %d через blockades_by_node",
+                        entity.id, node_id,
+                    )
+                    break
+
         distance = dist_map.get(nav_id, MAX_MAP_DISTANCE)
+
+        if distance >= MAX_MAP_DISTANCE:
+            logger.warning(
+                "Я не смог привязать entity_id=%d к графу: "
+                "pos_on_edge=%s, entity_xy=(%s,%s), nav_id=%d → distance=MAX",
+                entity.id,
+                entity.raw_sensor_data.position_on_edge,
+                entity.entity_x, entity.entity_y,
+                nav_id,
+            )
+
         entity.computed_metrics.path_distance = distance
         logger.debug(
             "Я обновил path_distance для entity_id=%d (nav_id=%d): %.1f мм",

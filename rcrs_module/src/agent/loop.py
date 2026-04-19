@@ -9,10 +9,12 @@ import time
 from config import (
     AVERAGE_SPEED,
     CLAIMED_TARGET_PENALTY,
+    CLEAR_SKIP_EXPIRE_TICKS,
     EXPLORATION_MAX_TICKS,
     EXPLORATION_PATH_LENGTH,
     EXPLORATION_SEED_PRIME,
     LOG_DIAG_PERIOD,
+    MAX_CLEAR_STALE_TICKS,
     NO_REFUGE_MAX_RETRIES,
     POLICE_URGENCY_DISTANCE_SCALE,
     SOCIAL_RADIUS,
@@ -133,6 +135,19 @@ def run_field_agent(
 
     last_processed_tick: int = -1
 
+    # Трекер прогресса расчистки завалов полицейским:
+    # blockade_id → (последний известный repair_cost, кол-во попыток AKClear
+    # без снижения стоимости). Инкрементируем ТОЛЬКО тот завал, по которому
+    # в этом такте реально был отправлен AKClear (возвращается из
+    # dispatch_action/try_clear_local_blockade). Иначе счётчик рос у всех
+    # известных завалов сразу и они ложно помечались как безнадёжные.
+    clear_progress: dict[int, tuple[int, int]] = {}
+    # skip_clear_blockades: blockade_id → такт, на котором завал отправлен
+    # в skip-список. Через CLEAR_SKIP_EXPIRE_TICKS запись выбрасывается,
+    # и агент получает шанс попробовать завал заново (он мог попасть
+    # в skip из-за временных причин — агент был далёк от полигона и т.п.).
+    skip_clear_blockades: dict[int, int] = {}
+
     try:
         while True:
             try:
@@ -205,7 +220,10 @@ def run_field_agent(
                 if e.type in allowed_types
                 and e.raw_sensor_data.position_on_edge not in world_model.refuge_ids
             ]
-            fill_path_distances(world_model.road_graph, agent_node_id, type_relevant)
+            fill_path_distances(
+                world_model.road_graph, agent_node_id, type_relevant,
+                blockades_by_node=world_model.blockades_by_node,
+            )
             t_dij = time.perf_counter() - t_dij_start
 
             if packet.tick % LOG_DIAG_PERIOD == 0 or type_relevant:
@@ -310,15 +328,39 @@ def run_field_agent(
             elif not is_stuck:
                 logger.info("Я выбрал/сохраняю цель target_id=%s, такт=%d", current_target_id, packet.tick)
 
+            # Истекаю skip-записи: через CLEAR_SKIP_EXPIRE_TICKS даю
+            # полицейскому шанс повторно попробовать расчистить завал —
+            # он мог попасть в skip из-за временной проблемы (например,
+            # полицейский был далеко от полигона на тот момент).
+            if agent_type == AgentType.POLICE_FORCE and skip_clear_blockades:
+                for blk_id in [
+                    b for b, t in skip_clear_blockades.items()
+                    if packet.tick - t >= CLEAR_SKIP_EXPIRE_TICKS
+                ]:
+                    del skip_clear_blockades[blk_id]
+                    clear_progress.pop(blk_id, None)
+                    logger.info(
+                        "Я снимаю skip с blockade_id=%d после %d тактов, "
+                        "tick=%d", blk_id, CLEAR_SKIP_EXPIRE_TICKS, packet.tick,
+                    )
+
+            # Выбрасываю из трекера завалы, пропавшие из кэша (уже расчищены).
+            if agent_type == AgentType.POLICE_FORCE:
+                for blk_id in list(clear_progress.keys()):
+                    if blk_id not in world_model.tasks:
+                        clear_progress.pop(blk_id, None)
+                        skip_clear_blockades.pop(blk_id, None)
+
             try:
                 # Я сначала пробую выполнить целевое действие, а если цель
                 # сброшена (или её не было) — перехожу к исследованию на
                 # том же такте. Это устраняет «потерянный такт»: раньше при
                 # сбросе цели агент отправлял AKRest и ждал следующего такта.
                 action_sent = False
+                attempted_clear_id: int | None = None
 
                 if current_target_id is not None:
-                    target_valid, unreachable, working = dispatch_action(
+                    target_valid, unreachable, working, attempted_clear_id = dispatch_action(
                         client=client,
                         agent_type=agent_type,
                         agent_state=agent_state,
@@ -326,6 +368,7 @@ def run_field_agent(
                         target_id=current_target_id,
                         agent_node_id=agent_node_id,
                         world_model=world_model,
+                        skip_blockades=skip_clear_blockades,
                     )
                     if unreachable:
                         selector.blacklist_unreachable(current_target_id, packet.tick)
@@ -344,8 +387,14 @@ def run_field_agent(
                     # Полицейский без цели: расчищаю ближайший завал вместо
                     # бесполезной попытки AKMove сквозь блокаду.
                     if agent_type == AgentType.POLICE_FORCE:
-                        if try_clear_local_blockade(client, packet.tick, agent_node_id, world_model):
+                        sent, tcb_attempted = try_clear_local_blockade(
+                            client, packet.tick, agent_node_id, world_model,
+                            agent_state=agent_state,
+                            skip_blockades=skip_clear_blockades,
+                        )
+                        if sent:
                             action_sent = True
+                            attempted_clear_id = tcb_attempted
 
                 if not action_sent:
                     exploration_target_node, exploration_start_tick = _explore_and_update(
@@ -353,6 +402,43 @@ def run_field_agent(
                         world_model, visited_nodes,
                         exploration_target_node, exploration_start_tick,
                     )
+
+                # Обновляю трекер прогресса ТОЛЬКО для завала, по которому
+                # в этом такте реально был отправлен AKClear. Раньше трекер
+                # штрафовал все известные завалы одинаково — и далёкие, и
+                # не атакованные, — из-за чего десятки завалов попадали
+                # в skip ложно уже на 7-м такте симуляции.
+                if (
+                    agent_type == AgentType.POLICE_FORCE
+                    and attempted_clear_id is not None
+                ):
+                    blk_ent = world_model.tasks.get(attempted_clear_id)
+                    cur_cost = (
+                        blk_ent.raw_sensor_data.repair_cost
+                        if blk_ent is not None else None
+                    )
+                    if cur_cost is not None:
+                        prev = clear_progress.get(attempted_clear_id)
+                        if prev is None:
+                            clear_progress[attempted_clear_id] = (cur_cost, 0)
+                        else:
+                            prev_cost, stale_count = prev
+                            if cur_cost < prev_cost:
+                                clear_progress[attempted_clear_id] = (cur_cost, 0)
+                                skip_clear_blockades.pop(attempted_clear_id, None)
+                            else:
+                                new_stale = stale_count + 1
+                                clear_progress[attempted_clear_id] = (prev_cost, new_stale)
+                                if new_stale >= MAX_CLEAR_STALE_TICKS:
+                                    skip_clear_blockades[attempted_clear_id] = packet.tick
+                                    logger.warning(
+                                        "Я пропускаю завал blockade_id=%d: "
+                                        "repair_cost=%d не снижается %d попыток "
+                                        "AKClear, пробую AKClearArea/объехать, "
+                                        "tick=%d",
+                                        attempted_clear_id, prev_cost,
+                                        new_stale, packet.tick,
+                                    )
 
             except (ConnectionError, OSError) as exc:
                 logger.error("Я потерял соединение при отправке команды: %s", exc)
@@ -410,6 +496,7 @@ def _handle_transport(
                 "Я %d тактов не могу найти убежище, такт=%d",
                 no_refuge_counter, pkt.tick,
             )
+            client.send_rest(pkt.tick)
             return 0
         logger.warning("Я не нашёл убежища (попытка %d), такт=%d", no_refuge_counter, pkt.tick)
         client.send_rest(pkt.tick)

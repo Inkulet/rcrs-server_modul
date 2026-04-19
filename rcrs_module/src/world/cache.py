@@ -127,8 +127,22 @@ class WorldModel:
                 continue
 
             node_id = entity.raw_sensor_data.position_on_edge
+
+            # Если position_on_edge не пришёл от сервера, пытаюсь
+            # восстановить узел графа по координатам завала (entity_x/y).
             if node_id is None:
-                continue
+                if entity.entity_x is not None and entity.entity_y is not None:
+                    from action.navigation import find_nearest_node
+                    inferred = find_nearest_node(self.road_graph, entity.entity_x, entity.entity_y)
+                    if inferred is not None:
+                        node_id = inferred
+                        logger.info(
+                            "Я вывел position_on_edge=%d для завала entity_id=%d "
+                            "из координат (%d, %d)",
+                            node_id, entity.id, entity.entity_x, entity.entity_y,
+                        )
+                if node_id is None:
+                    continue
 
             # Я пропускаю завалы с repair_cost=0: они уже расчищены, но
             # сервер ещё не прислал deleted_entity_ids. Без этой проверки
@@ -170,7 +184,9 @@ class WorldModel:
             self.refuge_ids = list(packet.refuge_ids)
             logger.info("Я сохранил %d убежищ: %s", len(self.refuge_ids), self.refuge_ids)
 
-        self.agents.clear()
+        # Я НЕ очищаю agents целиком: союзники вне зоны видимости
+        # сохраняют последнее известное состояние. Без этого social_factor
+        # считал 0 однотипных агентов рядом, даже если они там были.
         self.update_agents(packet.ally_states)
 
         for eid in packet.deleted_entity_ids:
@@ -180,6 +196,25 @@ class WorldModel:
             self.last_seen_tick.pop(eid, None)
 
         self.update_perception(packet.visible_entities)
+
+        # Резервный источник position_on_edge: PROP_BLOCKADES дорог даёт
+        # обратный индекс blockade_id → road_id. Если у завала в кэше нет
+        # position_on_edge — заполняю из этого индекса.
+        if packet.blockade_to_road:
+            for blk_id, road_id in packet.blockade_to_road.items():
+                entity = self.tasks.get(blk_id)
+                if entity is not None and entity.raw_sensor_data.position_on_edge is None:
+                    merged_raw = entity.raw_sensor_data.model_copy(
+                        update={"position_on_edge": road_id},
+                    )
+                    self.tasks[blk_id] = entity.model_copy(
+                        update={"raw_sensor_data": merged_raw},
+                    )
+                    logger.info(
+                        "Я восстановил position_on_edge=%d для завала entity_id=%d "
+                        "из PROP_BLOCKADES дороги",
+                        road_id, blk_id,
+                    )
 
         for entity in packet.visible_entities:
             self.last_seen_tick[entity.id] = packet.tick

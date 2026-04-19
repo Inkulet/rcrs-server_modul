@@ -404,6 +404,7 @@ def parse_ka_sense(
 
     visible_entities: list[VisibleEntity] = []
     ally_states:       list[AgentState]   = []
+    blockade_to_road: dict[int, int]      = {}
 
     if COMP_UPDATES in proto.components:
         change_set: ChangeSetProto = proto.components[COMP_UPDATES].changeSet
@@ -469,6 +470,18 @@ def parse_ka_sense(
                         entity_y=y,
                     ))
                 continue
+
+            # Для дорог извлекаю PROP_BLOCKADES — список завалов на этой
+            # дороге. Строю обратный индекс blockade_id → road_id как
+            # резервный источник position_on_edge (на случай, если
+            # PROP_POSITION для завала не пришёл в ChangeSet).
+            if eurn == ENT_ROAD and PROP_BLOCKADES in props and props[PROP_BLOCKADES].defined:
+                try:
+                    blk_ids = list(props[PROP_BLOCKADES].intList.values)
+                    for blk_id in blk_ids:
+                        blockade_to_road[blk_id] = eid
+                except (AttributeError, TypeError):
+                    pass
 
             entity_type = _ENTITY_URN_TO_ENTITY_TYPE.get(eurn)
             if entity_type is None:
@@ -568,6 +581,7 @@ def parse_ka_sense(
         map_edges=[],
         deleted_entity_ids=deleted_ids,
         heard_target_ids=heard_target_ids,
+        blockade_to_road=blockade_to_road,
     )
 
     logger.debug(

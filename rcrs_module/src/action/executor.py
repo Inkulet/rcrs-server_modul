@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Container
 
 from config import (
     FIRE_EXTINGUISH_MAX_DISTANCE,
@@ -68,13 +69,20 @@ def dispatch_action(
     target_id: int,
     agent_node_id: int,
     world_model: WorldModel,
-) -> tuple[bool, bool, bool]:
+    skip_blockades: Container[int] | None = None,
+) -> tuple[bool, bool, bool, int | None]:
+    # Четвёртый элемент кортежа — id завала, по которому в этом такте
+    # реально был отправлен AKClear. None, если действие другое
+    # (AKMove / AKClearArea / AKRescue / AKExtinguish / AKLoad). Нужен
+    # трекеру прогресса расчистки в loop.py, чтобы инкрементировать
+    # stale-счётчик ТОЛЬКО тем завалам, которые мы действительно пробовали
+    # чистить (а не всем, что когда-либо попали в кэш).
     nav_node_id = get_nav_node(target_id, world_model)
 
     if nav_node_id is None:
         logger.warning("Я не нашёл узла графа для target_id=%d, сбрасываю цель", target_id)
         # Команду НЕ отправляю — вызывающий код перейдёт к исследованию.
-        return False, True, False
+        return False, True, False, None
 
     path = compute_path(world_model.road_graph, agent_node_id, nav_node_id)
 
@@ -84,7 +92,7 @@ def dispatch_action(
             target_id, nav_node_id,
         )
         # Команду НЕ отправляю — вызывающий код перейдёт к исследованию.
-        return False, True, False
+        return False, True, False, None
 
     entity = world_model.tasks.get(target_id)
     tx, ty = _resolve_entity_coords(target_id, world_model)
@@ -121,6 +129,7 @@ def dispatch_action(
     return _execute_move(
         client, agent_type, agent_state, tick, target_id,
         agent_node_id, nav_node_id, path, tx, ty, entity, world_model,
+        skip_blockades=skip_blockades,
     )
 
 
@@ -134,7 +143,7 @@ def _execute_at_target(
     ty: int,
     entity: object,
     world_model: WorldModel,
-) -> tuple[bool, bool, bool]:
+) -> tuple[bool, bool, bool, int | None]:
     if agent_type == AgentType.AMBULANCE_TEAM:
         return _ambulance_at_target(client, agent_state, tick, target_id, entity, world_model)
 
@@ -143,7 +152,7 @@ def _execute_at_target(
             # Я не нашёл сущность — помечаю как недостижимую, чтобы не
             # зацикливаться. Команду НЕ отправляю: вызывающий код
             # перейдёт к исследованию и отправит AKMove.
-            return False, True, False
+            return False, True, False, None
 
         # Спасение заваленных мирных/союзников — пожарный тоже его умеет
         # (сервер принимает AKRescue от FireBrigade, MiscSimulator.java:407).
@@ -156,7 +165,7 @@ def _execute_at_target(
                     target_id, tick,
                 )
                 world_model.remove_task(target_id)
-                return False, True, False
+                return False, True, False, None
             if buriedness is None or buriedness <= 0:
                 logger.info(
                     "Я пропускаю спасение: buriedness=%s у target_id=%d, tick=%d",
@@ -164,13 +173,13 @@ def _execute_at_target(
                 )
                 # Откопан — передаю цель медикам (убираю из своих задач).
                 world_model.remove_task(target_id)
-                return False, True, False
+                return False, True, False, None
             client.send_rescue(tick, target_id)
             logger.info(
                 "Я (пожарный) отправил AKRescue: target_id=%d, buriedness=%d, tick=%d",
                 target_id, buriedness, tick,
             )
-            return True, False, True
+            return True, False, True, None
 
         fieryness = entity.raw_sensor_data.fieryness
         if fieryness is not None and fieryness not in {1, 2, 3}:
@@ -181,7 +190,7 @@ def _execute_at_target(
             # Команду НЕ отправляю — вызывающий код перейдёт к
             # исследованию и отправит AKMove вместо бесполезного AKRest.
             # unreachable=True заблокирует повторный выбор этой цели.
-            return False, True, False
+            return False, True, False, None
         if fieryness is None:
             logger.info(
                 "Я не знаю fieryness здания target_id=%d, пропускаю тушение, tick=%d",
@@ -189,11 +198,17 @@ def _execute_at_target(
             )
             # Данные могут появиться на следующем такте; помечаю как
             # недостижимое с коротким сроком блокировки.
-            return False, True, False
+            return False, True, False, None
         water = min(MAX_WATER_DISCHARGE, agent_state.resources.water_quantity)
+        if water <= 0:
+            logger.info(
+                "Я пропускаю тушение: water=0 у target_id=%d, tick=%d",
+                target_id, tick,
+            )
+            return False, True, False, None
         client.send_extinguish(tick, target_id, water=water)
         logger.info("Я отправил AKExtinguish: target_id=%d, water=%d, tick=%d", target_id, water, tick)
-        return True, False, True
+        return True, False, True, None
 
     if agent_type == AgentType.POLICE_FORCE:
         if entity is None:
@@ -201,27 +216,50 @@ def _execute_at_target(
                 "Я пропускаю расчистку: завал target_id=%d пропал из кэша, tick=%d",
                 target_id, tick,
             )
-            return False, True, False
+            return False, True, False, None
         repair_cost = entity.raw_sensor_data.repair_cost
         if repair_cost is not None and repair_cost <= 0:
             logger.info(
                 "Я пропускаю расчистку: завал target_id=%d уже расчищен (repair_cost=%s), tick=%d",
                 target_id, repair_cost, tick,
             )
-            return False, True, False
-        # Использую AKClear (по entity ID): MiscSimulator надёжно вычитает
-        # clearRate из repair_cost каждый такт. AKClearArea с нулевым
-        # коридором (dest == agent pos) не работал — завалы не удалялись.
+            return False, True, False, None
+        # Проверяю геометрическую близость: ClearSimulator.isValid
+        # отклоняет AKClear, если расстояние агент→полигон завала больше
+        # clear.repair.distance (10 м). Если мы «далеко» по координатам
+        # (узел крупный, полигон в другом его конце), переключаюсь на
+        # AKClearArea — он работает по геометрии и не зависит от id.
+        ax, ay = agent_state.position.x, agent_state.position.y
+        bx, by = _resolve_entity_coords(target_id, world_model)
+        use_clear_area = False
+        if bx != 0 or by != 0:
+            dist = math.hypot(bx - ax, by - ay)
+            if dist > POLICE_CLEAR_MAX_DISTANCE:
+                use_clear_area = True
+
+        if use_clear_area:
+            client.send_clear_area(tick, bx, by)
+            logger.info(
+                "Я отправил AKClearArea: target_id=%d, repair_cost=%s, "
+                "dist=%.0f>%.0f, dest=(%d,%d), tick=%d",
+                target_id, repair_cost, dist, POLICE_CLEAR_MAX_DISTANCE,
+                bx, by, tick,
+            )
+            # По AKClearArea нельзя надёжно сопоставить уменьшение
+            # repair_cost конкретному id — возвращаю None, трекер не
+            # будет инкрементировать stale для этой команды.
+            return True, False, True, None
+
         client.send_clear(tick, target_id)
         logger.info(
             "Я отправил AKClear: target_id=%d, repair_cost=%s, tick=%d",
             target_id, repair_cost, tick,
         )
-        return True, False, True
+        return True, False, True, target_id
 
     # Неизвестный тип агента — не отправляю команду, вызывающий код
     # перейдёт к исследованию.
-    return False, True, False
+    return False, True, False, None
 
 
 def _ambulance_at_target(
@@ -279,23 +317,82 @@ def _execute_move(
     ty: int,
     entity: object,
     world_model: WorldModel,
-) -> tuple[bool, bool, bool]:
+    skip_blockades: Container[int] | None = None,
+) -> tuple[bool, bool, bool, int | None]:
     dest_x, dest_y = tx, ty
 
-    # Полицейский при движении к цели НЕ останавливается на каждом завале
-    # по пути. Веса рёбер графа уже учитывают завалы (refresh_blockade_weights),
-    # поэтому A* строит обходной маршрут. Остановка для расчистки каждого
-    # промежуточного завала приводила к бесконечному зацикливанию:
-    # полицейский отправлял AKClearArea каждый такт, но завал не исчезал
-    # (нулевой коридор или проблемы с симулятором), и агент стоял на месте.
-    # Расчистка целевого завала происходит в _execute_at_target (при at_target).
+    # Полицейский перед движением расчищает завал на ТЕКУЩЕМ узле, если он
+    # там есть. Иначе TrafficAgent.step() на сервере увидит
+    # insideBlockade()=true и выставит setMobile(false) — AKMove будет
+    # проигнорирован, агент «зависает». Веса рёбер графа уже гонят A* в
+    # обход известных завалов (refresh_blockade_weights), поэтому чистить
+    # промежуточные завалы по пути НЕ требуется — их там быть не должно.
+    # Завалы из skip_blockades пропускаются — трекер в loop.py определил,
+    # что repair_cost не снижается (AKClear не проходит).
+    if agent_type == AgentType.POLICE_FORCE:
+        local_blockades = world_model.blockades_by_node.get(agent_node_id)
+        if local_blockades:
+            ax, ay = agent_state.position.x, agent_state.position.y
+            any_clearable = False  # завалы есть и не все в skip
+            for blockade_id in local_blockades:
+                if skip_blockades and blockade_id in skip_blockades:
+                    continue
+                local_entity = world_model.tasks.get(blockade_id)
+                if local_entity is None:
+                    continue
+                local_cost = local_entity.raw_sensor_data.repair_cost
+                if local_cost is None or local_cost <= 0:
+                    continue
+                any_clearable = True
+
+                # Геометрическая проверка: ClearSimulator.isValid требует,
+                # чтобы расстояние от агента до полигона завала было меньше
+                # clear.repair.distance. Если блокада ближе другого узла
+                # того же графа — шлю AKClear по id; иначе AKClearArea.
+                bx = local_entity.entity_x
+                by = local_entity.entity_y
+                if bx is not None and by is not None and (bx != 0 or by != 0):
+                    dist = math.hypot(bx - ax, by - ay)
+                    if dist > POLICE_CLEAR_MAX_DISTANCE:
+                        client.send_clear_area(tick, int(bx), int(by))
+                        logger.info(
+                            "Я (полиция) отправил AKClearArea на завал "
+                            "blockade_id=%d (dist=%.0f>%.0f) на пути к "
+                            "target_id=%d, node=%d, tick=%d",
+                            blockade_id, dist, POLICE_CLEAR_MAX_DISTANCE,
+                            target_id, agent_node_id, tick,
+                        )
+                        return True, False, True, None
+
+                client.send_clear(tick, blockade_id)
+                logger.info(
+                    "Я (полиция) расчищаю завал на пути к target_id=%d: "
+                    "blockade_id=%d, repair_cost=%d, node=%d, tick=%d",
+                    target_id, blockade_id, local_cost, agent_node_id, tick,
+                )
+                return True, False, True, blockade_id
+
+            # Все локальные завалы в skip_blockades. AKMove сервер
+            # проигнорирует (setMobile(false) внутри insideBlockade()),
+            # поэтому вместо него шлю AKClearArea в сторону цели — это
+            # действие ClearSimulator обрабатывает геометрически и оно
+            # не зависит от id, что разрывает зависание.
+            if not any_clearable and local_blockades:
+                client.send_clear_area(tick, dest_x, dest_y)
+                logger.info(
+                    "Я (полиция) все локальные завалы в skip — отправляю "
+                    "AKClearArea вместо AKMove: target_id=%d, dest=(%d,%d), "
+                    "node=%d, tick=%d",
+                    target_id, dest_x, dest_y, agent_node_id, tick,
+                )
+                return True, False, True, None
 
     client.send_move(tick, path, dest_x=dest_x, dest_y=dest_y)
     logger.info(
         "Я отправил AKMove: target_id=%d, nav=%d, path_len=%d, dest=(%d,%d), tick=%d",
         target_id, nav_node_id, len(path), dest_x, dest_y, tick,
     )
-    return True, False, False
+    return True, False, False, None
 
 
 def try_clear_local_blockade(
@@ -303,35 +400,91 @@ def try_clear_local_blockade(
     tick: int,
     agent_node_id: int,
     world_model: WorldModel,
-) -> bool:
+    agent_state: AgentState | None = None,
+    skip_blockades: Container[int] | None = None,
+) -> tuple[bool, int | None]:
     """Расчищает ближайший завал на ТЕКУЩЕМ узле полицейского.
 
     Проверяет только текущий узел (не соседние), чтобы не зацикливаться
-    на удалённых завалах. Пропускает завалы с repair_cost=0 или None.
-    Использует AKClear (по entity ID) — MiscSimulator надёжно вычитает
-    clearRate из repair_cost каждый такт. Возвращает True, если была
-    отправлена команда.
+    на удалённых завалах. Пропускает завалы с repair_cost=0 или None,
+    а также завалы из skip_blockades (прогресс расчистки отсутствует).
+    Если координаты завала известны и он дальше POLICE_CLEAR_MAX_DISTANCE
+    от агента — отправляет AKClearArea вместо AKClear (иначе сервер
+    отклонит команду как «не adjacent»).
+
+    Возвращает (action_sent, attempted_blockade_id): флаг отправки
+    команды и id завала, по которому послан именно AKClear (для трекера
+    прогресса). При AKClearArea id=None.
     """
     blockade_set = world_model.blockades_by_node.get(agent_node_id)
     if not blockade_set:
-        return False
+        return False, None
+
+    ax = ay = 0
+    if agent_state is not None:
+        ax, ay = agent_state.position.x, agent_state.position.y
 
     for blockade_id in blockade_set:
+        if skip_blockades and blockade_id in skip_blockades:
+            continue
         entity = world_model.tasks.get(blockade_id)
         if entity is None:
             continue
         repair_cost = entity.raw_sensor_data.repair_cost
         if repair_cost is None or repair_cost <= 0:
             continue
+
+        bx = entity.entity_x
+        by = entity.entity_y
+        if (
+            agent_state is not None
+            and bx is not None and by is not None
+            and (bx != 0 or by != 0)
+        ):
+            dist = math.hypot(bx - ax, by - ay)
+            if dist > POLICE_CLEAR_MAX_DISTANCE:
+                client.send_clear_area(tick, int(bx), int(by))
+                logger.info(
+                    "Я отправил AKClearArea (локальный завал далёк): "
+                    "blockade_id=%d, dist=%.0f>%.0f, dest=(%d,%d), "
+                    "node=%d, tick=%d",
+                    blockade_id, dist, POLICE_CLEAR_MAX_DISTANCE,
+                    int(bx), int(by), agent_node_id, tick,
+                )
+                return True, None
+
         client.send_clear(tick, blockade_id)
         logger.info(
             "Я расчищаю ближайший завал (AKClear): blockade_id=%d, "
             "repair_cost=%d, node=%d, tick=%d",
             blockade_id, repair_cost, agent_node_id, tick,
         )
-        return True
+        return True, blockade_id
 
-    return False
+    # На узле есть завалы, но все в skip_blockades — шлю AKClearArea
+    # по средним координатам, чтобы разорвать зависание (AKMove без
+    # расчистки тут невозможен: setMobile(false) на стороне сервера).
+    sum_x = sum_y = n = 0
+    for blockade_id in blockade_set:
+        ent = world_model.tasks.get(blockade_id)
+        if ent is None or ent.entity_x is None or ent.entity_y is None:
+            continue
+        if ent.entity_x == 0 and ent.entity_y == 0:
+            continue
+        sum_x += ent.entity_x
+        sum_y += ent.entity_y
+        n += 1
+    if n > 0:
+        cx, cy = sum_x // n, sum_y // n
+        client.send_clear_area(tick, cx, cy)
+        logger.info(
+            "Я (полиция) все локальные завалы в skip — шлю AKClearArea "
+            "по центроиду: dest=(%d,%d), node=%d, tick=%d",
+            cx, cy, agent_node_id, tick,
+        )
+        return True, None
+
+    return False, None
 
 
 __all__ = [

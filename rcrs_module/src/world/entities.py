@@ -114,6 +114,11 @@ class PerceptionPacket(BaseEntityModel):
 
     heard_target_ids: set[int] = Field(default_factory=set)
 
+    # Обратный индекс blockade_id → road_id, извлечённый из PROP_BLOCKADES
+    # дорожных сущностей. Используется как резервный источник position_on_edge
+    # в случае, если PROP_POSITION для завала не пришёл.
+    blockade_to_road: dict[int, int] = Field(default_factory=dict)
+
 
 # Я умножаю наивную оценку hp/damage на этот коэффициент, чтобы учесть
 # нелинейный рост damage (рядом с пожаром, кровотечение нарастает).
