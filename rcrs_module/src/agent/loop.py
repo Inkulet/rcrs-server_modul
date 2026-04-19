@@ -21,6 +21,7 @@ from config import (
     NO_REFUGE_MAX_RETRIES,
     POLICE_URGENCY_DISTANCE_SCALE,
     RECENT_ALLY_TARGET_TICKS,
+    SAME_ROLE_CLAIM_PENALTY,
     SOCIAL_RADIUS,
     TICK_BUDGET_SECONDS,
 )
@@ -39,6 +40,13 @@ from action.selection import TargetSelector
 from decision.filters.pre_filter import NeedRefugeException, PreFilterDispatcher
 from decision.utility.aggregator import UtilityAggregator
 from network.client import RCRSClient
+from network.codec import (
+    AGENT_TYPE_TO_SAY_ROLE,
+    SAY_KIND_BURIED_HELP,
+    SAY_KIND_TARGET_CLAIM,
+    SAY_ROLE_UNKNOWN,
+    encode_say_payload,
+)
 from world.cache import WorldModel
 from world.entities import AgentType, EntityType, Position, VisibleEntity
 
@@ -142,7 +150,8 @@ def run_field_agent(
     )
     client.set_metrics(metrics)
 
-    recent_allies_targets: dict[int, int] = {}
+    recent_target_claims: dict[int, tuple[int, int, int]] = {}
+    own_say_role = AGENT_TYPE_TO_SAY_ROLE.get(agent_type, SAY_ROLE_UNKNOWN)
 
     try:
         while True:
@@ -202,7 +211,9 @@ def run_field_agent(
                 )
                 client.send_rest(packet.tick)
                 try:
-                    say_data = struct.pack(">i", agent_state.id)
+                    say_data = encode_say_payload(
+                        SAY_KIND_BURIED_HELP, agent_state.id, own_say_role,
+                    )
                     client.send_say(packet.tick, say_data)
                 except (ConnectionError, OSError, struct.error) as exc:
                     logger.warning("Я не смог крикнуть о помощи: %s", exc)
@@ -318,25 +329,44 @@ def run_field_agent(
                 )
 
             for tid in packet.heard_target_ids:
-                recent_allies_targets[tid] = packet.tick
-                if tid in utilities and tid != current_target_id:
-                    old_u = utilities[tid]
-                    utilities[tid] = old_u - CLAIMED_TARGET_PENALTY
-                    logger.debug(
-                        "Я снизил U для target_id=%d: %.4f → %.4f (занята другим)",
-                        tid, old_u, utilities[tid],
-                    )
+                role_code = packet.heard_target_roles.get(tid, SAY_ROLE_UNKNOWN)
+                speaker_id = packet.heard_target_speakers.get(tid, 0)
+                recent_target_claims[tid] = (packet.tick, role_code, speaker_id)
 
-            if agent_type == AgentType.FIRE_BRIGADE:
-                expired = [
-                    t for t, last in recent_allies_targets.items()
-                    if packet.tick - last > RECENT_ALLY_TARGET_TICKS
-                ]
-                for t in expired:
-                    recent_allies_targets.pop(t, None)
-                for tid in list(recent_allies_targets.keys()):
-                    if tid in utilities and tid != current_target_id:
-                        utilities[tid] -= ALLY_TARGET_LONGTERM_PENALTY
+            expired = [
+                tid for tid, (last_tick, _role_code, _speaker_id) in recent_target_claims.items()
+                if packet.tick - last_tick > RECENT_ALLY_TARGET_TICKS
+            ]
+            for tid in expired:
+                recent_target_claims.pop(tid, None)
+
+            if current_target_id is not None and current_target_id in recent_target_claims:
+                _last_tick, role_code, speaker_id = recent_target_claims[current_target_id]
+                if (
+                    role_code == own_say_role
+                    and speaker_id > 0
+                    and speaker_id < agent_state.id
+                ):
+                    logger.info(
+                        "Я уступаю claimed цель target_id=%d агенту %d той же роли",
+                        current_target_id, speaker_id,
+                    )
+                    current_target_id = None
+
+            for tid, (_last_tick, role_code, _speaker_id) in recent_target_claims.items():
+                if tid not in utilities or tid == current_target_id:
+                    continue
+                penalty = CLAIMED_TARGET_PENALTY
+                if role_code == own_say_role:
+                    penalty += SAME_ROLE_CLAIM_PENALTY
+                    if agent_type == AgentType.FIRE_BRIGADE:
+                        penalty += ALLY_TARGET_LONGTERM_PENALTY
+                old_u = utilities[tid]
+                utilities[tid] = old_u - penalty
+                logger.debug(
+                    "Я снизил U для target_id=%d по claim(role=%d): %.4f → %.4f",
+                    tid, role_code, old_u, utilities[tid],
+                )
 
             prev_target = current_target_id
             with metrics.phase("selection"):
@@ -414,7 +444,9 @@ def run_field_agent(
             if current_target_id is not None:
                 with metrics.phase("say"):
                     try:
-                        say_data = struct.pack(">i", current_target_id)
+                        say_data = encode_say_payload(
+                            SAY_KIND_TARGET_CLAIM, current_target_id, own_say_role,
+                        )
                         client.send_say(packet.tick, say_data)
                     except (ConnectionError, OSError) as exc:
                         logger.warning("Я не смог отправить AKSay: %s", exc)

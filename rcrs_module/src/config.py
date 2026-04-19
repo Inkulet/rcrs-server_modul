@@ -111,6 +111,11 @@ EXPLORATION_MAX_TICKS: int = 80
 # Применяется аддитивно: U' = U - CLAIMED_TARGET_PENALTY.
 CLAIMED_TARGET_PENALTY: float = 0.3
 
+# Дополнительный штраф для same-role claim. Нужен для простого ownership:
+# если цель уже занята агентом той же роли, я почти всегда уступаю её и не
+# дублирую работу. Legacy-claims без роли получают только базовый штраф выше.
+SAME_ROLE_CLAIM_PENALTY: float = 0.7
+
 # Шаг 10: сколько тактов помнить услышанную цель союзника (FIRE_BRIGADE),
 # чтобы разводить пожарных по разным очагам. Заменяет K-means
 # кластеризацию из ADF на простую «память» о занятых целях.
@@ -198,6 +203,7 @@ __all__ = [
     "EXPLORATION_MAX_TICKS",
     # Координация
     "CLAIMED_TARGET_PENALTY",
+    "SAME_ROLE_CLAIM_PENALTY",
     "RECENT_ALLY_TARGET_TICKS",
     "ALLY_TARGET_LONGTERM_PENALTY",
     "C_SWITCH",

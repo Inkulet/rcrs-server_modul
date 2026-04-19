@@ -12,6 +12,12 @@ from config import (
 from action.navigation import compute_path, find_nearest_node
 from action.police_geometry import intersects_blockade, nearest_apex, scale_clear_vector
 from network.client import RCRSClient
+from network.codec import (
+    AGENT_TYPE_TO_SAY_ROLE,
+    SAY_KIND_BLOCKADE_REPORT,
+    SAY_ROLE_UNKNOWN,
+    encode_say_payload,
+)
 from world.cache import WorldModel
 from world.entities import AgentState, AgentType, EntityType
 
@@ -108,6 +114,15 @@ def _select_blockade_apex_clear(
         clear_x, clear_y = scale_clear_vector(
             (ax, ay), aim, POLICE_CLEAR_MAX_DISTANCE,
         )
+        if apexes is not None and not intersects_blockade(
+            (ax, ay), (clear_x, clear_y), apexes,
+        ):
+            logger.debug(
+                "Я пропускаю blockade_id=%d: clear-вектор (%d,%d)->(%d,%d) "
+                "не пересекает полигон завала",
+                blockade_id, ax, ay, clear_x, clear_y,
+            )
+            continue
 
         if best is None or dist < best[0]:
             best = (dist, blockade_id, cost, clear_x, clear_y)
@@ -511,10 +526,13 @@ def _execute_move(
                 stop_y = int(stop_node_attrs.get("y", dest_y))
                 client.send_move(tick, truncated, dest_x=stop_x, dest_y=stop_y)
                 try:
-                    import struct as _struct
                     if blk_for_say > 0:
+                        role_code = AGENT_TYPE_TO_SAY_ROLE.get(agent_type, SAY_ROLE_UNKNOWN)
                         client.send_say(
-                            tick, _struct.pack(">i", blk_for_say),
+                            tick,
+                            encode_say_payload(
+                                SAY_KIND_BLOCKADE_REPORT, blk_for_say, role_code,
+                            ),
                         )
                 except (ConnectionError, OSError, Exception) as exc:  # noqa: BLE001
                     logger.debug("Я не смог AKSay о завале: %s", exc)

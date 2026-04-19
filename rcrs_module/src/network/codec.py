@@ -110,6 +110,21 @@ COMP_WATER    = _STD_CMP | 4  # 0x1404
 COMP_PATH     = _STD_CMP | 5  # 0x1405
 COMP_MESSAGE  = _STD_CMP | 6  # 0x1406  Message — содержимое AKSay/AKSpeak (rawData)
 
+SAY_KIND_TARGET_CLAIM = 1
+SAY_KIND_BURIED_HELP = 2
+SAY_KIND_BLOCKADE_REPORT = 3
+
+SAY_ROLE_UNKNOWN = 0
+SAY_ROLE_FIRE_BRIGADE = 1
+SAY_ROLE_AMBULANCE_TEAM = 2
+SAY_ROLE_POLICE_FORCE = 3
+
+AGENT_TYPE_TO_SAY_ROLE: dict[AgentType, int] = {
+    AgentType.FIRE_BRIGADE: SAY_ROLE_FIRE_BRIGADE,
+    AgentType.AMBULANCE_TEAM: SAY_ROLE_AMBULANCE_TEAM,
+    AgentType.POLICE_FORCE: SAY_ROLE_POLICE_FORCE,
+}
+
 _ENTITY_URN_TO_AGENT_TYPE: dict[int, AgentType] = {
     ENT_FIRE_BRIGADE:    AgentType.FIRE_BRIGADE,
     ENT_AMBULANCE_TEAM:  AgentType.AMBULANCE_TEAM,
@@ -285,6 +300,10 @@ def build_ak_say(agent_id: int, time: int, data: bytes) -> bytes:
     msg.components[COMP_TIME].intValue     = time
     msg.components[COMP_MESSAGE].rawData   = data
     return pack_frame(msg.SerializeToString())
+
+
+def encode_say_payload(kind: int, entity_id: int, role_code: int = SAY_ROLE_UNKNOWN) -> bytes:
+    return struct.pack(">iii", kind, entity_id, role_code)
 
 
 def _get_int(comp: MessageComponentProto) -> int:
@@ -584,17 +603,29 @@ def parse_ka_sense(
         deleted_ids = list(proto.components[COMP_UPDATES].changeSet.deletes)
 
     heard_target_ids: set[int] = set()
+    heard_target_roles: dict[int, int] = {}
+    heard_target_speakers: dict[int, int] = {}
     if COMP_HEARING in proto.components:
         hearing_comp = proto.components[COMP_HEARING]
         if hearing_comp.HasField("commandList"):
             for cmd in hearing_comp.commandList.commands:
                 if cmd.urn == MSG_AK_SAY and COMP_MESSAGE in cmd.components:
+                    speaker_id = _get_int(cmd.components[COMP_AGENT_ID]) if COMP_AGENT_ID in cmd.components else 0
+                    if speaker_id == agent_id:
+                        continue
                     raw = cmd.components[COMP_MESSAGE].rawData
-                    if len(raw) >= 4:
-                        import struct
+                    if len(raw) >= 12:
+                        kind, target_id, role_code = struct.unpack(">iii", raw[:12])
+                        if kind == SAY_KIND_TARGET_CLAIM and target_id > 0:
+                            heard_target_ids.add(target_id)
+                            heard_target_roles[target_id] = role_code
+                            heard_target_speakers[target_id] = speaker_id
+                    elif len(raw) >= 4:
                         target_id = struct.unpack(">i", raw[:4])[0]
                         if target_id > 0:
                             heard_target_ids.add(target_id)
+                            heard_target_roles[target_id] = SAY_ROLE_UNKNOWN
+                            heard_target_speakers[target_id] = speaker_id
     if heard_target_ids:
         logger.debug(
             "Я услышал %d целей от соседних агентов: %s",
@@ -610,6 +641,8 @@ def parse_ka_sense(
         map_edges=[],
         deleted_entity_ids=deleted_ids,
         heard_target_ids=heard_target_ids,
+        heard_target_roles=heard_target_roles,
+        heard_target_speakers=heard_target_speakers,
         blockade_to_road=blockade_to_road,
         road_blockades=road_blockades,
     )
@@ -680,6 +713,9 @@ __all__ = [
     "MSG_AK_MOVE", "MSG_AK_RESCUE", "MSG_AK_EXTINGUISH",
     "MSG_AK_CLEAR", "MSG_AK_LOAD", "MSG_AK_UNLOAD", "MSG_AK_REST",
     "MSG_AK_SAY", "COMP_MESSAGE",
+    "SAY_KIND_TARGET_CLAIM", "SAY_KIND_BURIED_HELP", "SAY_KIND_BLOCKADE_REPORT",
+    "SAY_ROLE_UNKNOWN", "SAY_ROLE_FIRE_BRIGADE", "SAY_ROLE_AMBULANCE_TEAM",
+    "SAY_ROLE_POLICE_FORCE", "AGENT_TYPE_TO_SAY_ROLE", "encode_say_payload",
     # Фреймирование
     "pack_frame", "unpack_frame_length",
     # Сборка команд

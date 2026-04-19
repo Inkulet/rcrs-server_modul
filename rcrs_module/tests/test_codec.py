@@ -13,6 +13,8 @@ import pytest
 from network.codec import (
     COMP_AGENT_ID,
     COMP_ENTITIES,
+    COMP_HEARING,
+    COMP_MESSAGE,
     COMP_PATH,
     COMP_REQUEST_ID,
     COMP_TARGET,
@@ -30,6 +32,7 @@ from network.codec import (
     MSG_AK_LOAD,
     MSG_AK_MOVE,
     MSG_AK_REST,
+    MSG_AK_SAY,
     MSG_AK_UNLOAD,
     PROP_BLOCKADES,
     PROP_BURIEDNESS,
@@ -48,12 +51,17 @@ from network.codec import (
     URN_KA_SENSE,
     build_ak_clear,
     build_ak_connect,
+    encode_say_payload,
     build_ak_extinguish,
     build_ak_load,
     build_ak_move,
     build_ak_rescue,
     build_ak_rest,
     build_ak_unload,
+    SAY_KIND_BLOCKADE_REPORT,
+    SAY_KIND_BURIED_HELP,
+    SAY_KIND_TARGET_CLAIM,
+    SAY_ROLE_AMBULANCE_TEAM,
     pack_frame,
     parse_ka_connect_ok,
     parse_ka_sense,
@@ -95,6 +103,18 @@ def _make_entity_prop(urn: int, entity_id: int, defined: bool = True) -> Propert
     p.intValue = entity_id  # Я использую intValue, потому что PropertyProto не имеет entityID
     p.defined = defined
     return p
+
+
+def _append_hearing_say(
+    proto: MessageProto,
+    speaker_id: int,
+    payload: bytes,
+) -> None:
+    msg = MessageProto()
+    msg.urn = MSG_AK_SAY
+    msg.components[COMP_AGENT_ID].entityID = speaker_id
+    msg.components[COMP_MESSAGE].rawData = payload
+    proto.components[COMP_HEARING].commandList.commands.append(msg)
 
 
 # ===========================================================================
@@ -431,6 +451,37 @@ class TestParseKaSense:
         packet = parse_ka_sense(proto, agent_id=1, agent_type=AgentType.FIRE_BRIGADE)
         assert 42 in packet.deleted_entity_ids
         assert 99 in packet.deleted_entity_ids
+
+    def test_heard_target_claim_parses_role(self) -> None:
+        proto = self._make_sense(agent_id=1, tick=3)
+        _append_hearing_say(
+            proto,
+            speaker_id=77,
+            payload=encode_say_payload(
+                SAY_KIND_TARGET_CLAIM, 501, SAY_ROLE_AMBULANCE_TEAM,
+            ),
+        )
+        packet = parse_ka_sense(proto, agent_id=1, agent_type=AgentType.FIRE_BRIGADE)
+        assert packet.heard_target_ids == {501}
+        assert packet.heard_target_roles == {501: SAY_ROLE_AMBULANCE_TEAM}
+        assert packet.heard_target_speakers == {501: 77}
+
+    def test_non_claim_say_does_not_pollute_heard_targets(self) -> None:
+        proto = self._make_sense(agent_id=1, tick=3)
+        _append_hearing_say(
+            proto,
+            speaker_id=77,
+            payload=encode_say_payload(SAY_KIND_BURIED_HELP, 77),
+        )
+        _append_hearing_say(
+            proto,
+            speaker_id=88,
+            payload=encode_say_payload(SAY_KIND_BLOCKADE_REPORT, 9001),
+        )
+        packet = parse_ka_sense(proto, agent_id=1, agent_type=AgentType.FIRE_BRIGADE)
+        assert packet.heard_target_ids == set()
+        assert packet.heard_target_roles == {}
+        assert packet.heard_target_speakers == {}
 
     def test_building_with_fieryness_zero_parses_ok(self) -> None:
         """Я проверяю: fieryness=0 (не горит) не вызывает ValidationError после исправления ge=0."""

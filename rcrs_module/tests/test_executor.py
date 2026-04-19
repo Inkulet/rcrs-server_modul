@@ -135,6 +135,51 @@ def test_police_falls_back_to_blockade_geometry_when_path_aim_misses() -> None:
     assert abs(dest_y) < 2000
 
 
+def test_police_does_not_clear_when_clear_ray_misses_blockade_polygon() -> None:
+    wm = WorldModel()
+    wm.road_graph.add_node(1, x=0, y=0)
+
+    blockade = make_blockade(entity_id=79, repair_cost=900)
+    blockade = blockade.model_copy(
+        update={
+            "entity_x": 0,
+            "entity_y": 9000,
+            "raw_sensor_data": blockade.raw_sensor_data.model_copy(
+                update={
+                    "position_on_edge": 1,
+                    "apexes": [8500, -500, 9500, -500, 9500, 500, 8500, 500],
+                },
+            ),
+        },
+    )
+    wm.tasks[79] = blockade
+
+    client = _ClientStub()
+    agent = make_agent(
+        agent_id=9,
+        agent_type=AgentType.POLICE_FORCE,
+        x=0,
+        y=0,
+        entity_id=1,
+    )
+
+    target_valid, unreachable, working, attempted = dispatch_action(
+        client=client,
+        agent_type=AgentType.POLICE_FORCE,
+        agent_state=agent,
+        tick=8,
+        target_id=79,
+        agent_node_id=1,
+        world_model=wm,
+    )
+
+    assert target_valid is False
+    assert unreachable is False
+    assert working is False
+    assert attempted is None
+    assert client.clear_area_calls == []
+
+
 def test_ambulance_does_not_chase_or_load_civilian_already_in_refuge() -> None:
     wm = WorldModel()
     wm.road_graph.add_node(1, x=0, y=0)
