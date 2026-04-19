@@ -10,13 +10,7 @@ from config import (
     POLICE_CLEAR_MAX_DISTANCE,
 )
 from action.navigation import compute_path, find_nearest_node
-from action.police_geometry import (
-    intersects_area_edge,
-    nearest_apex,
-    scale_back_vector,
-    scale_clear_vector,
-    segment_crosses_edges,
-)
+from action.police_geometry import scale_clear_vector
 from network.client import RCRSClient
 from world.cache import WorldModel
 from world.entities import AgentState, AgentType, EntityType
@@ -64,53 +58,7 @@ def _node_xy(world_model: WorldModel, node_id: int) -> Optional[tuple[int, int]]
     return int(x), int(y)
 
 
-def _verified_clear_for_apexes(
-    agent_xy: tuple[int, int],
-    aim_xy: tuple[int, int],
-    apexes,
-) -> Optional[tuple[int, int]]:
-    # Повторяю приём аналога (adf-core-python: default_extend_action_clear):
-    # строю вперёд точку clear_end на POLICE_CLEAR_MAX_DISTANCE, а назад
-    # за спину агента — точку start на -510 мм. Проверяю, что длинный отрезок
-    # (start → clear_end) реально пересекает хотя бы одну грань полигона
-    # завала. Если нет — прицел считаю промахом и возвращаю None.
-    clear_end = scale_clear_vector(agent_xy, aim_xy, POLICE_CLEAR_MAX_DISTANCE)
-    start = scale_back_vector(agent_xy, aim_xy)
-    if not segment_crosses_edges(start, clear_end, apexes):
-        return None
-    return clear_end
-
-
-def _pick_aim_candidates(
-    agent_xy: tuple[int, int],
-    aim_xy: Optional[tuple[int, int]],
-    bx: int,
-    by: int,
-    apexes,
-) -> list[tuple[int, int]]:
-    # Порядок кандидатов важен: сначала заявленный курс (путь/центроид),
-    # затем вершины завала — так я не теряю поведение «прорубаю туннель»,
-    # но всегда имею запасной прицел, если основной не проходит верификацию.
-    candidates: list[tuple[int, int]] = []
-
-    def _push(xy: Optional[tuple[int, int]]) -> None:
-        if xy is None:
-            return
-        cx, cy = xy
-        if cx == agent_xy[0] and cy == agent_xy[1]:
-            return
-        if xy in candidates:
-            return
-        candidates.append((int(cx), int(cy)))
-
-    if aim_xy is not None:
-        _push(aim_xy)
-    if bx != 0 or by != 0:
-        _push((bx, by))
-    if apexes is not None:
-        for i in range(0, len(apexes) - 1, 2):
-            _push((int(apexes[i]), int(apexes[i + 1])))
-    return candidates
+POLICE_CLEAR_RANGE_SLACK: float = 2000.0
 
 
 def _select_blockade_apex_clear(
@@ -119,16 +67,16 @@ def _select_blockade_apex_clear(
     blockade_ids: set[int] | list[int],
     aim_xy: Optional[tuple[int, int]],
 ) -> Optional[tuple[int, int, int, int]]:
-    # Прицеливание:
-    # - если задан aim_xy (вектор пути к следующему узлу) — стреляю
-    #   строго вдоль этого вектора, прорубая «туннель» через завал.
-    #   Координата clear-точки статична из такта в такт → anti-stuck
-    #   корректно ловит повторы и вовремя выполняет AKMove.
-    # - иначе (локальная расчистка без маршрута) — бью в центроид завала,
-    #   а не в ближайшую вершину, чтобы конус AKClearArea попадал в «мясо»
-    #   завала, а не в воздух у самого края полигона.
+    # Эталон — DefaultActionExtClear (adf-core-python): никакой Shapely,
+    # никакой проверки пересечений — в 1-секундный тик python-агентов это
+    # прямой путь к таймаутам и «пустым» тактам.
+    # Я беру ближайший по math.hypot завал в допустимом радиусе
+    # (POLICE_CLEAR_MAX_DISTANCE + запас на габариты) и стреляю конусом
+    # в сторону aim_xy (вектор движения). Если aim_xy не задан — в центр
+    # масс завала. Попасть в центр тела полигона вероятнее, чем в угол.
     ax, ay = agent_state.position.x, agent_state.position.y
-    best: Optional[tuple[float, int, int, int, int]] = None  # (dist, bid, cost, cx, cy)
+    range_limit = POLICE_CLEAR_MAX_DISTANCE + POLICE_CLEAR_RANGE_SLACK
+    best: Optional[tuple[float, int, int, int, int]] = None
 
     for blockade_id in blockade_ids:
         entity = world_model.tasks.get(blockade_id)
@@ -139,44 +87,16 @@ def _select_blockade_apex_clear(
             continue
 
         bx, by = _resolve_entity_coords(blockade_id, world_model)
-        apexes = entity.raw_sensor_data.apexes
+        if bx == 0 and by == 0:
+            continue
+        dist = math.hypot(bx - ax, by - ay)
+        if dist > range_limit:
+            continue
 
-        if apexes is None or len(apexes) < 6:
-            # Без полигона верификация невозможна: просто проверяю
-            # дистанцию до центроида и стреляю в выбранный прицел.
-            if bx == 0 and by == 0:
-                continue
-            dist = math.hypot(bx - ax, by - ay)
-            if dist > POLICE_CLEAR_MAX_DISTANCE:
-                continue
-            aim = aim_xy if aim_xy is not None else (bx, by)
-            clear_x, clear_y = scale_clear_vector(
-                (ax, ay), aim, POLICE_CLEAR_MAX_DISTANCE,
-            )
-        else:
-            apex_result = nearest_apex((ax, ay), apexes)
-            if apex_result is None:
-                continue
-            _, _, apex_dist = apex_result
-            if apex_dist > POLICE_CLEAR_MAX_DISTANCE:
-                continue
-
-            # Перебираю прицелы по приоритету и беру первый, у которого
-            # отрезок (start_back → clear_end) реально пересекает грань
-            # полигона завала. Это гарантирует попадание конуса AKClearArea.
-            verified: Optional[tuple[int, int]] = None
-            for cand in _pick_aim_candidates((ax, ay), aim_xy, bx, by, apexes):
-                verified = _verified_clear_for_apexes((ax, ay), cand, apexes)
-                if verified is not None:
-                    break
-            if verified is None:
-                logger.debug(
-                    "Я не нашёл прицел, проходящий через завал: bid=%s",
-                    blockade_id,
-                )
-                continue
-            clear_x, clear_y = verified
-            dist = apex_dist
+        aim = aim_xy if aim_xy is not None else (bx, by)
+        clear_x, clear_y = scale_clear_vector(
+            (ax, ay), aim, POLICE_CLEAR_MAX_DISTANCE,
+        )
 
         if best is None or dist < best[0]:
             best = (dist, blockade_id, cost, clear_x, clear_y)
@@ -496,8 +416,19 @@ def _execute_move(
     dest_x, dest_y = tx, ty
 
     if agent_type == AgentType.POLICE_FORCE:
-        blockade_set = world_model.blockades_by_node.get(agent_node_id)
+        # Как в ADF: беру завалы на текущем И следующем узле пути.
+        # Завал мог «разделиться» при частичной расчистке: центр уехал,
+        # ID сменился — но если я всегда смотрю на ближайший к себе
+        # завал в широком радиусе, я его поймаю.
+        local_blockades = world_model.blockades_by_node.get(agent_node_id, set())
+        next_blockades: set[int] = set()
+        if path and len(path) > 1:
+            next_blockades = world_model.blockades_by_node.get(path[1], set())
+        blockade_set = set(local_blockades) | set(next_blockades)
+
         if blockade_set:
+            # Целимся всегда в сторону следующего узла пути — прорубаю
+            # прямой туннель, а не ковыряю обочину.
             aim_x, aim_y = dest_x, dest_y
             if path and len(path) > 1:
                 nxt = _node_xy(world_model, path[1])
