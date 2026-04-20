@@ -118,8 +118,8 @@ def _select_blockade_apex_clear(
             (ax, ay), (clear_x, clear_y), apexes,
         ):
             logger.debug(
-                "Я пропускаю blockade_id=%d: clear-вектор (%d,%d)->(%d,%d) "
-                "не пересекает полигон завала",
+                "Executor (police): завал пропущен — clear-вектор не пересекает полигон "
+                "[blockade_id=%d, vector=(%d,%d)->(%d,%d)]",
                 blockade_id, ax, ay, clear_x, clear_y,
             )
             continue
@@ -190,7 +190,7 @@ def get_nav_node(target_id: int, world_model: WorldModel) -> int | None:
             return nearest
 
     logger.warning(
-        "Я не нашёл узла графа для target_id=%d",
+        "Executor.get_nav_node: узел графа для цели не найден [target_id=%d]",
         target_id,
     )
     return None
@@ -208,14 +208,14 @@ def dispatch_action(
     nav_node_id = get_nav_node(target_id, world_model)
 
     if nav_node_id is None:
-        logger.warning("Я не нашёл узла графа для target_id=%d, сбрасываю цель", target_id)
+        logger.warning("Executor: nav-узел для цели не найден, цель сброшена [target_id=%d]", target_id)
         return False, True, False, None
 
     path = compute_path(world_model.road_graph, agent_node_id, nav_node_id)
 
     if not path:
         logger.warning(
-            "Я не могу построить путь к target_id=%d (nav_node=%d), сбрасываю цель",
+            "Executor: путь к цели не построен, цель сброшена [target_id=%d, nav_node=%d]",
             target_id, nav_node_id,
         )
         return False, True, False, None
@@ -229,7 +229,7 @@ def dispatch_action(
         pos_edge = entity.raw_sensor_data.position_on_edge
         if pos_edge is not None and pos_edge in world_model.refuge_ids:
             logger.info(
-                "Я снимаю цель target_id=%d: гражданский уже в убежище pos=%d, tick=%d",
+                "Executor (ambulance): цель снята — гражданский уже в убежище [target_id=%d, refuge_node=%d, tick=%d]",
                 target_id, pos_edge, tick,
             )
             world_model.remove_task(target_id)
@@ -291,22 +291,22 @@ def _execute_at_target(
             hp = entity.raw_sensor_data.hp
             if hp is not None and hp == 0:
                 logger.info(
-                    "Я пропускаю спасение: цель target_id=%d мертва, tick=%d",
+                    "Executor (fire/rescue): спасение пропущено — цель мертва (hp=0) [target_id=%d, tick=%d]",
                     target_id, tick,
                 )
                 world_model.remove_task(target_id)
                 return False, True, False, None
             if buriedness is None or buriedness <= 0:
                 logger.info(
-                    "Я пропускаю спасение: buriedness=%s у target_id=%d, tick=%d",
-                    buriedness, target_id, tick,
+                    "Executor (fire/rescue): спасение пропущено — цель уже откопана, передаётся медикам [target_id=%d, buriedness=%s, tick=%d]",
+                    target_id, buriedness, tick,
                 )
                 # Откопан — передаю цель медикам (убираю из своих задач).
                 world_model.remove_task(target_id)
                 return False, True, False, None
             client.send_rescue(tick, target_id)
             logger.info(
-                "Я (пожарный) отправил AKRescue: target_id=%d, buriedness=%d, tick=%d",
+                "Executor (fire/rescue): AKRescue отправлен [target_id=%d, buriedness=%d, tick=%d]",
                 target_id, buriedness, tick,
             )
             return True, False, True, None
@@ -314,38 +314,38 @@ def _execute_at_target(
         fieryness = entity.raw_sensor_data.fieryness
         if fieryness is not None and fieryness not in {1, 2, 3}:
             logger.info(
-                "Я пропускаю тушение: здание target_id=%d не горит (fieryness=%s), tick=%d",
+                "Executor (fire): тушение пропущено — здание не горит [target_id=%d, fieryness=%s, tick=%d]",
                 target_id, fieryness, tick,
             )
             return False, True, False, None
         if fieryness is None:
             logger.info(
-                "Я не знаю fieryness здания target_id=%d, пропускаю тушение, tick=%d",
+                "Executor (fire): тушение пропущено — fieryness неизвестен [target_id=%d, tick=%d]",
                 target_id, tick,
             )
             return False, True, False, None
         water = min(MAX_WATER_DISCHARGE, agent_state.resources.water_quantity)
         if water <= 0:
             logger.info(
-                "Я пропускаю тушение: water=0 у target_id=%d, tick=%d",
+                "Executor (fire): тушение пропущено — вода закончилась [target_id=%d, tick=%d]",
                 target_id, tick,
             )
             return False, True, False, None
         client.send_extinguish(tick, target_id, water=water)
-        logger.info("Я отправил AKExtinguish: target_id=%d, water=%d, tick=%d", target_id, water, tick)
+        logger.info("Executor (fire): AKExtinguish отправлен [target_id=%d, water=%d, tick=%d]", target_id, water, tick)
         return True, False, True, None
 
     if agent_type == AgentType.POLICE_FORCE:
         if entity is None:
             logger.info(
-                "Я пропускаю расчистку: завал target_id=%d пропал из кэша, tick=%d",
+                "Executor (police): расчистка пропущена — завал отсутствует в кэше [target_id=%d, tick=%d]",
                 target_id, tick,
             )
             return False, True, False, None
         repair_cost = entity.raw_sensor_data.repair_cost
         if repair_cost is not None and repair_cost <= 0:
             logger.info(
-                "Я пропускаю расчистку: завал target_id=%d уже расчищен (repair_cost=%s), tick=%d",
+                "Executor (police): расчистка пропущена — завал уже расчищен [target_id=%d, repair_cost=%s, tick=%d]",
                 target_id, repair_cost, tick,
             )
             return False, True, False, None
@@ -355,8 +355,8 @@ def _execute_at_target(
         )
         if pick is None:
             logger.info(
-                "Я пропускаю расчистку: цель target_id=%d не подтвердилась как "
-                "реальный завал для AKClearArea, tick=%d",
+                "Executor (police): расчистка пропущена — цель не подтверждена apex-проверкой "
+                "[target_id=%d, tick=%d]",
                 target_id, tick,
             )
             return False, False, False, None
@@ -366,16 +366,16 @@ def _execute_at_target(
         if forced:
             client.send_move(tick, [agent_state.position.entity_id], dest_x=cx, dest_y=cy)
             logger.info(
-                "Я (полиция) anti-stuck AKMove: target_id=%d одинаковая точка "
-                "расчистки %d раз, иду к (%d,%d), tick=%d",
+                "Executor (police): anti-stuck AKMove после повтора AKClearArea "
+                "[target_id=%d, repeats=%d, move_to=(%d,%d), tick=%d]",
                 target_id, _SAME_CLEAR_FORCE_MOVE, cx, cy, tick,
             )
             return True, False, True, None
 
         _police_send_clear_area_xy(client, tick, agent_state, cx, cy)
         logger.info(
-            "Я (полиция) AKClearArea apex-target: target_id=%d (real=%d), "
-            "clear=(%d,%d), repair_cost=%s, tick=%d",
+            "Executor (police): AKClearArea отправлен (apex-target) "
+            "[target_id=%d, blockade_id=%d, clear=(%d,%d), repair_cost=%s, tick=%d]",
             target_id, bid, cx, cy, repair_cost, tick,
         )
         return True, False, True, bid
@@ -397,7 +397,7 @@ def _ambulance_at_target(
     # на распаковке сразу после AKLoad, из-за чего не ехал в убежище.
     if entity is None:
         logger.warning(
-            "Я не нашёл сущность target_id=%d в кэше, сбрасываю цель (tick=%d)",
+            "Executor (ambulance): сущность отсутствует в кэше, цель сброшена [target_id=%d, tick=%d]",
             target_id, tick,
         )
         return False, True, False, None
@@ -405,14 +405,14 @@ def _ambulance_at_target(
     buriedness = entity.raw_sensor_data.buriedness  # type: ignore[union-attr]
     entity_type = entity.type  # type: ignore[union-attr]
     logger.info(
-        "ДИАГ_AT [AMBULANCE] at_target=True: target_id=%d, buriedness=%s, type=%s, tick=%d",
+        "Executor (ambulance): агент у цели [target_id=%d, buriedness=%s, entity_type=%s, tick=%d]",
         target_id, buriedness, entity_type.value, tick,
     )
 
     if buriedness is not None and buriedness > 0:
         client.send_rescue(tick, target_id)
         logger.info(
-            "Я отправил AKRescue: target_id=%d, buriedness=%s, tick=%d",
+            "Executor (ambulance): AKRescue отправлен [target_id=%d, buriedness=%s, tick=%d]",
             target_id, buriedness, tick,
         )
         return True, False, True, None
@@ -420,14 +420,14 @@ def _ambulance_at_target(
     if entity_type == EntityType.HUMAN or entity.is_ally:  # type: ignore[union-attr]
         world_model.remove_task(target_id)
         logger.info(
-            "Я снял цель target_id=%d: союзник/HUMAN — AKLoad не применим, "
-            "tick=%d", target_id, tick,
+            "Executor (ambulance): цель снята — союзник/HUMAN, AKLoad не применим "
+            "[target_id=%d, tick=%d]", target_id, tick,
         )
         return False, True, False, None
 
     if entity_type != EntityType.CIVILIAN:
         logger.warning(
-            "Я пропускаю AKLoad: target_id=%d не CIVILIAN (type=%s), tick=%d",
+            "Executor (ambulance): AKLoad пропущен — цель не CIVILIAN [target_id=%d, entity_type=%s, tick=%d]",
             target_id, entity_type.value, tick,
         )
         return False, True, False, None
@@ -436,14 +436,14 @@ def _ambulance_at_target(
     if pos_edge is not None and pos_edge in world_model.refuge_ids:
         world_model.remove_task(target_id)
         logger.info(
-            "Я снял цель target_id=%d: гражданский уже в убежище pos=%d, "
-            "AKLoad не нужен, tick=%d",
+            "Executor (ambulance): цель снята — гражданский уже в убежище, AKLoad не нужен "
+            "[target_id=%d, refuge_node=%d, tick=%d]",
             target_id, pos_edge, tick,
         )
         return False, False, False, None
 
     client.send_load(tick, target_id)
-    logger.info("Я отправил AKLoad: target_id=%d, tick=%d", target_id, tick)
+    logger.info("Executor (ambulance): AKLoad отправлен [target_id=%d, tick=%d]", target_id, tick)
     return True, False, True, None
 
 
@@ -498,15 +498,15 @@ def _execute_move(
                         tick, [agent_node_id], dest_x=cx, dest_y=cy,
                     )
                     logger.info(
-                        "Я (полиция) anti-stuck AKMove на пути к target_id=%d: "
-                        "одинаковая расчистка %dx, иду к (%d,%d), tick=%d",
+                        "Executor (police): anti-stuck AKMove по пути к цели "
+                        "[target_id=%d, repeats=%d, move_to=(%d,%d), tick=%d]",
                         target_id, _SAME_CLEAR_FORCE_MOVE, cx, cy, tick,
                     )
                     return True, False, True, None
                 _police_send_clear_area_xy(client, tick, agent_state, cx, cy)
                 logger.info(
-                    "Я (полиция) AKClearArea apex на пути к target_id=%d: "
-                    "blockade=%d, cost=%d, clear=(%d,%d), aim=(%d,%d), tick=%d",
+                    "Executor (police): AKClearArea apex на пути к цели "
+                    "[target_id=%d, blockade_id=%d, repair_cost=%d, clear=(%d,%d), aim=(%d,%d), tick=%d]",
                     target_id, bid, local_cost, cx, cy, aim_x, aim_y, tick,
                 )
                 return True, False, True, bid
@@ -535,18 +535,18 @@ def _execute_move(
                             ),
                         )
                 except (ConnectionError, OSError, Exception) as exc:  # noqa: BLE001
-                    logger.debug("Я не смог AKSay о завале: %s", exc)
+                    logger.debug("Executor: AKSay с отчётом о завале не отправлен — %s", exc)
                 logger.info(
-                    "Я (%s) торможу перед завалом на пути к target_id=%d: "
-                    "узел=%d заблокирован blockade_id=%d, стою в node=%d, "
-                    "tick=%d", agent_type.value, target_id,
+                    "Executor (%s): остановка перед завалом на пути к цели "
+                    "[target_id=%d, blocked_node=%d, blockade_id=%d, stop_node=%d, tick=%d]",
+                    agent_type.value, target_id,
                     blocked_node, blk_for_say, truncated[-1], tick,
                 )
                 return True, False, False, None
 
     client.send_move(tick, path, dest_x=dest_x, dest_y=dest_y)
     logger.info(
-        "Я отправил AKMove: target_id=%d, nav=%d, path_len=%d, dest=(%d,%d), tick=%d",
+        "Executor: AKMove отправлен [target_id=%d, nav_node=%d, path_len=%d, dest=(%d,%d), tick=%d]",
         target_id, nav_node_id, len(path), dest_x, dest_y, tick,
     )
     return True, False, False, None
@@ -592,16 +592,16 @@ def try_clear_local_blockade(
     if forced:
         client.send_move(tick, [agent_node_id], dest_x=cx, dest_y=cy)
         logger.info(
-            "Я (полиция) anti-stuck AKMove без цели: одинаковая точка "
-            "расчистки %dx, иду к (%d,%d), tick=%d",
+            "Executor (police): anti-stuck AKMove без цели "
+            "[repeats=%d, move_to=(%d,%d), tick=%d]",
             _SAME_CLEAR_FORCE_MOVE, cx, cy, tick,
         )
         return True, None
 
     _police_send_clear_area_xy(client, tick, agent_state, cx, cy)
     logger.info(
-        "Я расчищаю ближайший завал (AKClearArea apex): blockade=%d, "
-        "cost=%d, clear=(%d,%d), node=%d, tick=%d",
+        "Executor (police): AKClearArea на ближайший завал "
+        "[blockade_id=%d, repair_cost=%d, clear=(%d,%d), agent_node=%d, tick=%d]",
         bid, cost, cx, cy, agent_node_id, tick,
     )
     return True, bid

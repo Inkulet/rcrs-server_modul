@@ -40,6 +40,24 @@ TICK_CSV_ENABLED: bool = _cfg.getboolean("csv_metrics", "tick_csv_enabled", fall
 EVENTS_CSV_ENABLED: bool = _cfg.getboolean("csv_metrics", "events_csv_enabled", fallback=False)
 SUMMARY_JSON_ENABLED: bool = _cfg.getboolean("csv_metrics", "summary_json_enabled", fallback=False)
 
+
+def _parse_weights(key: str) -> tuple[float, float, float, float] | None:
+    raw = _cfg.get("weights", key, fallback="").strip()
+    if not raw:
+        return None
+    try:
+        parts = [float(x) for x in raw.split(",")]
+    except ValueError:
+        return None
+    if len(parts) != 4:
+        return None
+    return (parts[0], parts[1], parts[2], parts[3])
+
+
+FIRE_WEIGHTS_OVERRIDE = _parse_weights("fire")
+AMBULANCE_WEIGHTS_OVERRIDE = _parse_weights("ambulance")
+POLICE_WEIGHTS_OVERRIDE = _parse_weights("police")
+
 # ---------------------------------------------------------------------------
 # Параметры связи
 # ---------------------------------------------------------------------------

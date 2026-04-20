@@ -20,7 +20,7 @@ def distance_factor(
     max_map_distance: float = MAX_MAP_DISTANCE,
 ) -> float:
     if max_map_distance <= 0:
-        logger.warning("Я получил неположительную MaxMapDistance, возвращаю штраф 1.0")
+        logger.warning("Distance factor: неположительный max_map_distance — возвращается штраф 1.0")
         return 1.0
 
     try:
@@ -34,12 +34,12 @@ def distance_factor(
         )
     except nx.NetworkXNoPath:
         logger.warning(
-            "Я не нашёл путь между %s и %s",
+            "Distance factor: путь в графе не найден [from_id=%s, to_id=%s]",
             agent_position.entity_id, target_position.entity_id,
         )
         distance = None
     except nx.NodeNotFound as exc:
-        logger.warning("Я получил неизвестный узел: %s", exc)
+        logger.warning("Distance factor: узел отсутствует в графе — %s", exc)
         distance = None
 
     if distance is None:
@@ -49,7 +49,7 @@ def distance_factor(
         value = distance / max_map_distance
         return max(0.0, min(1.0, value))
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при расчёте геометрического фактора")
+        logger.warning("ZeroDivisionError в distance_factor — возвращается штраф 1.0")
         return 1.0
 
 
@@ -58,7 +58,7 @@ def distance_factor_precomputed(
     max_map_distance: float = MAX_MAP_DISTANCE,
 ) -> float:
     if max_map_distance <= 0:
-        logger.warning("Я получил неположительную MaxMapDistance, возвращаю штраф 1.0")
+        logger.warning("Distance factor: неположительный max_map_distance — возвращается штраф 1.0")
         return 1.0
     try:
         value = path_distance / max_map_distance
@@ -68,7 +68,7 @@ def distance_factor_precomputed(
             return 1.0
         return value
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при нормировке предвычисленной дистанции")
+        logger.warning("ZeroDivisionError в distance_factor_precomputed — возвращается штраф 1.0")
         return 1.0
 
 __all__ = ["MAX_MAP_DISTANCE", "distance_factor", "distance_factor_precomputed"]

@@ -103,7 +103,7 @@ class RCRSClient:
 
     def connect(self) -> None:
         if self.mock:
-            logger.info("Работа в mock-режиме")
+            logger.info("RCRSClient: запуск в mock-режиме (без TCP-подключения)")
             return
 
         if self._socket is not None:
@@ -114,10 +114,10 @@ class RCRSClient:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._socket.settimeout(self.timeout)
             self._socket.connect((self.host, self.port))
-            logger.info("Установлено TCP-соединение с RCRS Kernel на %s:%d", self.host, self.port)
+            logger.info("RCRSClient: TCP-соединение с RCRS Kernel установлено [host=%s, port=%d]", self.host, self.port)
         except (ConnectionRefusedError, socket.timeout, OSError) as exc:
             self._socket = None
-            logger.error("Не смог подключиться к RCRS Kernel: %s", exc)
+            logger.error("RCRSClient: не удалось подключиться к RCRS Kernel [host=%s, port=%d]: %s", self.host, self.port, exc)
             raise
 
     def disconnect(self) -> None:
@@ -128,7 +128,7 @@ class RCRSClient:
         finally:
             self._socket = None
             self._recv_buf.clear()
-            logger.info("Закрыл соединение с RCRS Kernel")
+            logger.info("RCRSClient: соединение с RCRS Kernel закрыто")
 
 
     def handshake(self, agent_name: str, agent_type: AgentType) -> int:
@@ -138,7 +138,7 @@ class RCRSClient:
             self._initial_map_nodes  = []
             self._initial_map_edges  = []
             self._initial_refuge_ids = []
-            logger.info("Провёл mock-рукопожатие: agent_id=%d", self._agent_id)
+            logger.info("RCRSClient: mock-рукопожатие выполнено [agent_id=%d]", self._agent_id)
             return self._agent_id
 
         entity_urn = _AGENT_TYPE_TO_ENTITY_URN[agent_type]
@@ -146,17 +146,17 @@ class RCRSClient:
 
         connect_frame = build_ak_connect(request_id, agent_name, [entity_urn])
         self._send_raw(connect_frame)
-        logger.info("Отправил AKConnect: name=%s, type=%s", agent_name, agent_type)
+        logger.info("RCRSClient: отправлен AKConnect [name=%s, agent_type=%s]", agent_name, agent_type)
 
         proto = self._recv_proto()
         if proto.urn == URN_KA_CONNECT_ERROR:
             reason_comp = proto.components.get(0x020A)
             reason = reason_comp.stringValue if reason_comp is not None else "unknown"
-            logger.error("получил KAConnectError от ядра: %s", reason)
+            logger.error("RCRSClient: ядро вернуло KAConnectError — %s", reason)
             raise ConnectionError(f"Ядро отказало в соединении: {reason}")
 
         if proto.urn != URN_KA_CONNECT_OK:
-            logger.error("ожидал KAConnectOK (0x%04X), получил URN=0x%04X", URN_KA_CONNECT_OK, proto.urn)
+            logger.error("RCRSClient: неожиданный URN в ответе на AKConnect [expected=0x%04X, got=0x%04X]", URN_KA_CONNECT_OK, proto.urn)
             raise ConnectionError(f"Неожиданный URN при рукопожатии: 0x{proto.urn:04X}")
 
         req_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position, initial_water = parse_ka_connect_ok(proto)
@@ -179,7 +179,7 @@ class RCRSClient:
             self._socket.settimeout(120.0)
 
         logger.info(
-            "Завершил рукопожатие: agent_id=%d, карта=%d узлов, %d рёбер",
+            "RCRSClient: рукопожатие завершено [agent_id=%d, map_nodes=%d, map_edges=%d]",
             agent_id, len(map_nodes), len(map_edges),
         )
         return agent_id
@@ -192,7 +192,7 @@ class RCRSClient:
         proto = self._recv_proto()
         if proto.urn != URN_KA_SENSE:
             logger.error(
-                "Я ожидал KASense (0x%04X), получил URN=0x%04X",
+                "RCRSClient: неожиданный URN вместо KASense [expected=0x%04X, got=0x%04X]",
                 URN_KA_SENSE, proto.urn,
             )
             raise ConnectionError(f"Неожиданный URN вместо KASense: 0x{proto.urn:04X}")
@@ -234,8 +234,8 @@ class RCRSClient:
         head = path[:2] if path else []
         agent_pos = self._prev_position.entity_id if self._prev_position else None
         logger.debug(
-            "Я отправил AKMove: time=%d, agent_pos=%s, path_head=%s, path_len=%d",
-            time, agent_pos, head, len(path),
+            "Отправлен AKMove [agent_id=%d, time=%d, agent_pos=%s, path_head=%s, path_len=%d]",
+            self._agent_id, time, agent_pos, head, len(path),
         )
         self._send_command(build_ak_move(self._agent_id, time, path, dest_x, dest_y))
         self._inc_metric("ak_move")
@@ -243,62 +243,62 @@ class RCRSClient:
     def send_rescue(self, time: int, target_id: int) -> None:
         self._send_command(build_ak_rescue(self._agent_id, time, target_id))
         self._inc_metric("ak_rescue")
-        logger.info("Я отправил AKRescue: time=%d, target=%d", time, target_id)
+        logger.info("Отправлен AKRescue [agent_id=%d, time=%d, target_id=%d]", self._agent_id, time, target_id)
 
     def send_extinguish(self, time: int, target_id: int, water: int) -> None:
         self._send_command(build_ak_extinguish(self._agent_id, time, target_id, water))
         self._inc_metric("ak_extinguish")
-        logger.info("Я отправил AKExtinguish: time=%d, target=%d, water=%d", time, target_id, water)
+        logger.info("Отправлен AKExtinguish [agent_id=%d, time=%d, target_id=%d, water=%d]", self._agent_id, time, target_id, water)
 
     def send_clear(self, time: int, target_id: int) -> None:
         self._send_command(build_ak_clear(self._agent_id, time, target_id))
         self._inc_metric("ak_clear_area")
-        logger.info("Я отправил AKClear: time=%d, target=%d", time, target_id)
+        logger.info("Отправлен AKClear [agent_id=%d, time=%d, target_id=%d]", self._agent_id, time, target_id)
 
     def send_clear_area(self, time: int, dest_x: int, dest_y: int) -> None:
         self._send_command(build_ak_clear_area(self._agent_id, time, dest_x, dest_y))
         self._inc_metric("ak_clear_area")
-        logger.info("Я отправил AKClearArea: time=%d, dest=(%d,%d)", time, dest_x, dest_y)
+        logger.info("Отправлен AKClearArea [agent_id=%d, time=%d, dest=(%d,%d)]", self._agent_id, time, dest_x, dest_y)
 
     def send_load(self, time: int, target_id: int) -> None:
         self._send_command(build_ak_load(self._agent_id, time, target_id))
         self._prev_transporting = True
         self._inc_metric("ak_load")
-        logger.info("Я отправил AKLoad: time=%d, target=%d", time, target_id)
+        logger.info("Отправлен AKLoad [agent_id=%d, time=%d, target_id=%d]", self._agent_id, time, target_id)
 
     def send_unload(self, time: int) -> None:
         self._send_command(build_ak_unload(self._agent_id, time))
 
         self._prev_transporting = False
         self._inc_metric("ak_unload")
-        logger.info("Я отправил AKUnload: time=%d", time)
+        logger.info("Отправлен AKUnload [agent_id=%d, time=%d]", self._agent_id, time)
 
     def send_rest(self, time: int) -> None:
         self._send_command(build_ak_rest(self._agent_id, time))
         self._inc_metric("ak_rest")
-        logger.debug("Я отправил AKRest: time=%d", time)
+        logger.debug("Отправлен AKRest [agent_id=%d, time=%d]", self._agent_id, time)
 
     def send_say(self, time: int, data: bytes) -> None:
         if not RADIO_ENABLED:
-            logger.debug("Радио отключено конфигом: пропускаю AKSay time=%d", time)
+            logger.debug("AKSay пропущен: радио отключено в конфиге [agent_id=%d, time=%d]", self._agent_id, time)
             return
         self._send_command(build_ak_say(self._agent_id, time, data))
         self._inc_metric("ak_say")
-        logger.debug("Я отправил AKSay: time=%d, data_len=%d", time, len(data))
+        logger.debug("Отправлен AKSay [agent_id=%d, time=%d, data_len=%d]", self._agent_id, time, len(data))
 
     def _send_raw(self, frame: bytes) -> None:
         if self._socket is None:
-            logger.error("Я пытаюсь отправить данные без активного соединения")
+            logger.error("RCRSClient: попытка отправки без активного соединения с ядром")
             raise ConnectionError("Нет активного соединения с ядром симулятора")
         try:
             self._socket.sendall(frame)
         except (BrokenPipeError, ConnectionResetError, socket.timeout) as exc:
-            logger.error("Я потерял соединение при отправке: %s", exc)
+            logger.error("RCRSClient: соединение потеряно при отправке данных — %s", exc)
             raise
 
     def _send_command(self, frame: bytes) -> None:
         if self.mock:
-            logger.debug("Я в mock-режиме, команда не отправляется в ядро")
+            logger.debug("RCRSClient: mock-режим, команда в ядро не отправляется")
             return
         self._send_raw(frame)
 
@@ -337,7 +337,7 @@ class RCRSClient:
 
         except (ConnectionResetError, BrokenPipeError) as exc:
             self._recv_buf.clear()
-            logger.error("Я потерял соединение при получении данных: %s", exc)
+            logger.error("RCRSClient: соединение потеряно при получении данных — %s", exc)
             raise
         except socket.timeout:
             raise

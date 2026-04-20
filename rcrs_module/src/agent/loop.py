@@ -316,10 +316,10 @@ def run_field_agent(
             try:
                 packet = client.receive_sense()
             except TimeoutError:
-                logger.warning("Я не получил KASense в срок, продолжаю ожидание")
+                logger.warning("Loop: KASense не пришёл в срок, ожидание следующего такта")
                 continue
             except (ConnectionError, OSError) as exc:
-                logger.error("Я потерял соединение при получении данных: %s", exc)
+                logger.error("Loop: соединение с ядром потеряно при получении KASense — %s", exc)
                 break
 
             metrics.start_tick()
@@ -330,8 +330,8 @@ def run_field_agent(
 
             if last_processed_tick >= 0 and packet.tick - last_processed_tick > 1:
                 logger.warning(
-                    "Я пропустил %d такт(ов): прошлый=%d, текущий=%d "
-                    "(ядро не дождалось моей команды)",
+                    "Loop: пропущены такты (ядро не дождалось команды агента) "
+                    "[lost_ticks=%d, prev_tick=%d, current_tick=%d]",
                     packet.tick - last_processed_tick - 1,
                     last_processed_tick, packet.tick,
                 )
@@ -367,20 +367,20 @@ def run_field_agent(
 
             if agent_node_id == 0:
                 logger.warning(
-                    "Я не нашёл позиции агента (entity_id=0), такт=%d → AKRest", packet.tick,
+                    "Loop: позиция агента не определена (entity_id=0), отправляется AKRest [tick=%d]", packet.tick,
                 )
                 client.send_rest(packet.tick)
                 continue
 
             if agent_state.hp is not None and agent_state.hp <= 0:
-                logger.info("Я не могу действовать: агент мёртв, такт=%d", packet.tick)
+                logger.info("Loop: агент мёртв, действия заблокированы [tick=%d]", packet.tick)
                 client.send_rest(packet.tick)
                 current_target_id = None
                 continue
 
             if agent_state.buriedness is not None and agent_state.buriedness > 0:
                 logger.info(
-                    "Я завален и зову на помощь! buriedness=%d, такт=%d",
+                    "Loop: агент завален, отправляется сигнал о помощи [buriedness=%d, tick=%d]",
                     agent_state.buriedness, packet.tick,
                 )
                 client.send_rest(packet.tick)
@@ -390,7 +390,7 @@ def run_field_agent(
                     )
                     client.send_say(packet.tick, say_data)
                 except (ConnectionError, OSError, struct.error) as exc:
-                    logger.warning("Я не смог крикнуть о помощи: %s", exc)
+                    logger.warning("Loop: сигнал BURIED_HELP не отправлен — %s", exc)
                 current_target_id = None
                 continue
 
@@ -418,7 +418,7 @@ def run_field_agent(
 
             if packet.tick % LOG_DIAG_PERIOD == 0 or type_relevant:
                 logger.info(
-                    "ДИАГ [%s] такт=%d: кэш=%d задач, type_relevant=%d",
+                    "Loop: диагностика такта [agent_type=%s, tick=%d, cache_tasks=%d, type_relevant=%d]",
                     agent_type.value, packet.tick,
                     len(world_model.tasks), len(type_relevant),
                 )
@@ -429,7 +429,7 @@ def run_field_agent(
                         agent_state, type_relevant, world_model=world_model,
                     )
             except NeedRefugeException:
-                logger.info("Я отправляю пожарного в убежище: нет воды")
+                logger.info("Loop (fire): воды нет, агент направляется в убежище")
                 refuge_path = nearest_refuge_path(
                     world_model.road_graph, agent_node_id, world_model.refuge_ids,
                 )
@@ -504,8 +504,8 @@ def run_field_agent(
                 )
                 utilities[entity.id] = utility
                 logger.debug(
-                    "Я рассчитал U_%d=%.4f для entity_id=%d",
-                    agent_state.id, utility, entity.id,
+                    "Loop: utility вычислена [agent_id=%d, entity_id=%d, U=%.4f]",
+                    agent_state.id, entity.id, utility,
                 )
 
             for tid in packet.heard_target_ids:
@@ -538,7 +538,8 @@ def run_field_agent(
                     and speaker_id < agent_state.id
                 ):
                     logger.info(
-                        "Я уступаю claimed цель target_id=%d агенту %d той же роли",
+                        "Loop: текущая цель уступлена союзнику той же роли с меньшим agent_id "
+                        "[target_id=%d, claimer_agent_id=%d]",
                         current_target_id, speaker_id,
                     )
                     current_target_id = None
@@ -554,7 +555,7 @@ def run_field_agent(
                 old_u = utilities[tid]
                 utilities[tid] = old_u - penalty
                 logger.debug(
-                    "Я снизил U для target_id=%d по claim(role=%d): %.4f → %.4f",
+                    "Loop: utility цели снижена по claim союзника [target_id=%d, role=%d, U: %.4f → %.4f]",
                     tid, role_code, old_u, utilities[tid],
                 )
 
@@ -642,7 +643,7 @@ def run_field_agent(
                             current_agent_id=agent_state.id, radius=SOCIAL_RADIUS,
                         )
                     except Exception as exc:  # noqa: BLE001
-                        logger.debug("Я не смог разложить utility для метрик: %s", exc)
+                        logger.debug("Loop: разложение utility для метрик не выполнено — %s", exc)
                     tgt_distance = sel_entity.computed_metrics.path_distance
 
             metrics.set_tick_fields(
@@ -663,9 +664,9 @@ def run_field_agent(
             )
 
             if current_target_id is None:
-                logger.info("Я не нашёл задачи — перехожу в режим исследования, такт=%d", packet.tick)
+                logger.info("Loop: доступных задач нет, агент переходит в режим exploration [tick=%d]", packet.tick)
             elif not is_stuck:
-                logger.info("Я выбрал/сохраняю цель target_id=%s, такт=%d", current_target_id, packet.tick)
+                logger.info("Loop: цель выбрана/удержана [target_id=%s, tick=%d]", current_target_id, packet.tick)
 
             try:
                 action_sent = False
@@ -729,7 +730,7 @@ def run_field_agent(
                 metrics.set_tick_field("action_dispatched", action_kind_dispatched)
 
             except (ConnectionError, OSError) as exc:
-                logger.error("Я потерял соединение при отправке команды: %s", exc)
+                logger.error("Loop: соединение с ядром потеряно при отправке команды — %s", exc)
                 break
 
             if current_target_id is not None:
@@ -744,14 +745,14 @@ def run_field_agent(
                             kind="coord", channel="say",
                         )
                     except (ConnectionError, OSError) as exc:
-                        logger.warning("Я не смог отправить AKSay: %s", exc)
+                        logger.warning("Loop: AKSay с TARGET_CLAIM не отправлен — %s", exc)
 
             metrics.stop_tick(packet.tick)
 
             tick_ms = metrics.last_tick_ms()
             if tick_ms > TICK_BUDGET_SECONDS * 1000.0:
                 logger.warning(
-                    "Я превысил бюджет такта %d: %.1f мс (tasks=%d)",
+                    "Loop: превышен бюджет времени такта [tick=%d, duration_ms=%.1f, tasks=%d]",
                     packet.tick, tick_ms, len(type_relevant),
                 )
 
@@ -761,7 +762,7 @@ def run_field_agent(
                 )
 
     except KeyboardInterrupt:
-        logger.info("Я получил сигнал остановки и завершаю работу")
+        logger.info("Loop: получен KeyboardInterrupt, завершение работы агента")
     finally:
         final_agent_id = agent_state.id if "agent_state" in locals() else -1
         try:
@@ -769,11 +770,11 @@ def run_field_agent(
                 _metrics_report_path(agent_type), final_agent_id, agent_type.value,
             )
         except (OSError, NameError) as exc:
-            logger.warning("Я не смог записать финальный отчёт метрик: %s", exc)
+            logger.warning("Loop: финальный отчёт метрик не записан — %s", exc)
         try:
             metrics.write_summary_json(final_agent_id, agent_type.value)
         except (OSError, NameError) as exc:
-            logger.warning("Я не смог записать summary.json: %s", exc)
+            logger.warning("Loop: summary.json не записан — %s", exc)
         metrics.close()
         client.disconnect()
 
@@ -798,8 +799,8 @@ def _handle_transport(
         if hp is not None and hp == 0:
             client.send_unload(pkt.tick)
             logger.info(
-                "Я выгружаю погибшего гражданского entity_id=%d на месте, "
-                "tick=%d (не везу в убежище)", ent.id, pkt.tick,
+                "Loop (ambulance): погибший гражданский выгружен на месте, маршрут в убежище отменён "
+                "[entity_id=%d, tick=%d]", ent.id, pkt.tick,
             )
             world_model.remove_task(ent.id)
             return 0
@@ -833,23 +834,23 @@ def _handle_transport(
         ref_attrs = world_model.road_graph.nodes.get(refuge_node, {})
         if agent_node_id == refuge_node:
             client.send_unload(pkt.tick)
-            logger.info("Я выгрузил гражданского в убежище refuge_id=%d, такт=%d", refuge_node, pkt.tick)
+            logger.info("Loop (ambulance): гражданский выгружен в убежище [refuge_id=%d, tick=%d]", refuge_node, pkt.tick)
         else:
             ref_x = ref_attrs.get("x", 0)
             ref_y = ref_attrs.get("y", 0)
             client.send_move(pkt.tick, refuge_path, dest_x=ref_x, dest_y=ref_y)
-            logger.info("Я везу гражданского к убежищу refuge_id=%d, такт=%d", refuge_node, pkt.tick)
+            logger.info("Loop (ambulance): транспортировка гражданского к убежищу [refuge_id=%d, tick=%d]", refuge_node, pkt.tick)
         return 0
     else:
         no_refuge_counter += 1
         if no_refuge_counter >= NO_REFUGE_MAX_RETRIES:
             logger.error(
-                "Я %d тактов не могу найти убежище, такт=%d",
+                "Loop (ambulance): убежище не найдено, лимит попыток исчерпан [retries=%d, tick=%d]",
                 no_refuge_counter, pkt.tick,
             )
             client.send_rest(pkt.tick)
             return 0
-        logger.warning("Я не нашёл убежища (попытка %d), такт=%d", no_refuge_counter, pkt.tick)
+        logger.warning("Loop (ambulance): убежище не найдено [attempt=%d, tick=%d]", no_refuge_counter, pkt.tick)
         client.send_rest(pkt.tick)
         return no_refuge_counter
 
@@ -906,9 +907,9 @@ def _explore_and_update(
                         ),
                     )
                 except (ConnectionError, OSError, struct.error) as exc:
-                    logger.warning("Я не смог отправить search-claim: %s", exc)
+                    logger.warning("Loop: AKSay с SEARCH_CLAIM не отправлен — %s", exc)
                 logger.info(
-                    "Я иду к зданию для поиска пострадавших node=%d: %d шагов, такт=%d",
+                    "Loop: маршрут к зданию для поиска пострадавших построен [target_node=%d, path_len=%d, tick=%d]",
                     search_target, len(search_path), pkt.tick,
                 )
                 return search_target, pkt.tick
@@ -928,7 +929,7 @@ def _explore_and_update(
         exploration_start_tick = pkt.tick
         if exploration_target_node is not None:
             logger.info(
-                "Я выбрал новую цель исследования node=%d (из узла=%d), такт=%d",
+                "Loop: выбрана новая exploration-цель [target_node=%d, from_node=%d, tick=%d]",
                 exploration_target_node, agent_node_id, pkt.tick,
             )
 
@@ -942,7 +943,7 @@ def _explore_and_update(
     if exp_path and len(exp_path) > 1:
         client.send_move(pkt.tick, exp_path)
         logger.info(
-            "Я иду к цели исследования node=%d: %d шагов, такт=%d",
+            "Loop: маршрут к exploration-цели построен [target_node=%d, path_len=%d, tick=%d]",
             exploration_target_node, len(exp_path), pkt.tick,
         )
     else:
@@ -950,10 +951,10 @@ def _explore_and_update(
         rw_path = random_walk(world_model.road_graph, agent_node_id, visited=visited_nodes)
         if len(rw_path) > 1:
             client.send_move(pkt.tick, rw_path)
-            logger.info("Я исследую random walk: %d узлов, такт=%d", len(rw_path), pkt.tick)
+            logger.info("Loop: fallback на random walk [path_len=%d, tick=%d]", len(rw_path), pkt.tick)
         else:
             client.send_rest(pkt.tick)
-            logger.warning("Я не могу исследовать — тупик node=%d, такт=%d", agent_node_id, pkt.tick)
+            logger.warning("Loop: exploration невозможна — узел-тупик без соседей [node=%d, tick=%d]", agent_node_id, pkt.tick)
 
     return exploration_target_node, exploration_start_tick
 

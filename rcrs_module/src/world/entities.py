@@ -35,7 +35,7 @@ class BaseEntityModel(BaseModel):
         try:
             return cls.model_validate(data)
         except ValidationError as exc:
-            logger.error("Я получил некорректные данные для %s: %s", cls.__name__, exc)
+            logger.error("Ошибка валидации Pydantic-модели %s: %s", cls.__name__, exc)
             return None
 
 

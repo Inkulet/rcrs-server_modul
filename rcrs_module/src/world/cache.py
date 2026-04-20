@@ -39,12 +39,12 @@ class WorldModel:
         # Обновляется в refresh_blockade_weights, O(1) поиск на пути.
         self.blockades_by_node: Dict[int, set[int]] = {}
 
-        logger.info("Я инициализировал пустую модель мира и граф дорожной сети")
+        logger.info("WorldModel: инициализированы пустой кэш и дорожный граф")
 
     def _bump_graph_revision(self) -> None:
         revision = int(self.road_graph.graph.get("revision", 0)) + 1
         self.road_graph.graph["revision"] = revision
-        logger.debug("Я повысил revision дорожного графа до %d", revision)
+        logger.debug("WorldModel: revision дорожного графа увеличен [revision=%d]", revision)
 
     def add_road_node(self, entity_id: int, **attrs: object) -> None:
         self.road_graph.add_node(entity_id, **attrs)
@@ -70,9 +70,9 @@ class WorldModel:
         if entity_id in self.tasks:
             del self.tasks[entity_id]
             self.last_seen_tick.pop(entity_id, None)
-            logger.info("Я удалил задачу entity_id=%d из кэша через remove_task", entity_id)
+            logger.info("WorldModel.remove_task: задача удалена из кэша [entity_id=%d]", entity_id)
         else:
-            logger.debug("Я пропустил remove_task: entity_id=%d не в кэше", entity_id)
+            logger.debug("WorldModel.remove_task: entity отсутствует в кэше [entity_id=%d]", entity_id)
 
     def build_graph_from_map(
         self,
@@ -114,12 +114,12 @@ class WorldModel:
             if diagonal > 0:
                 self.max_map_distance = diagonal
                 logger.info(
-                    "Я вычислил MaxMapDistance по bbox карты: %.0f мм (узлов=%d)",
+                    "WorldModel: MaxMapDistance вычислен по bbox карты [value_mm=%.0f, nodes=%d]",
                     self.max_map_distance, len(xs),
                 )
 
         logger.info(
-            "Я построил дорожный граф: %d вершин, %d рёбер",
+            "WorldModel: дорожный граф построен [nodes=%d, edges=%d]",
             node_count,
             edge_count,
         )
@@ -152,9 +152,8 @@ class WorldModel:
                     if inferred is not None:
                         node_id = inferred
                         logger.info(
-                            "Я вывел position_on_edge=%d для завала entity_id=%d "
-                            "из координат (%d, %d)",
-                            node_id, entity.id, entity.entity_x, entity.entity_y,
+                            "WorldModel: position_on_edge восстановлен по координатам [entity_id=%d, node_id=%d, x=%d, y=%d]",
+                            entity.id, node_id, entity.entity_x, entity.entity_y,
                         )
                 if node_id is None:
                     continue
@@ -185,7 +184,7 @@ class WorldModel:
                     penalized += 1
 
         if penalized:
-            logger.debug("Я пересчитал штрафы обхода завалов: обновлено %d рёбер", penalized)
+            logger.debug("WorldModel: штрафы обхода завалов пересчитаны [updated_edges=%d]", penalized)
 
         signature = frozenset(active_blockades)
         prev_signature = self.road_graph.graph.get("blockade_signature", frozenset())
@@ -196,7 +195,7 @@ class WorldModel:
     def update_agents(self, ally_states: Iterable[AgentState]) -> None:
         for ally in ally_states:
             self.agents[ally.id] = ally
-            logger.debug("Я обновил состояние союзника agent_id=%s", ally.id)
+            logger.debug("WorldModel: состояние союзника обновлено [agent_id=%s]", ally.id)
 
     def apply_perception(self, packet: PerceptionPacket) -> None:
         if packet.map_nodes or packet.map_edges:
@@ -204,7 +203,7 @@ class WorldModel:
 
         if packet.refuge_ids:
             self.refuge_ids = list(packet.refuge_ids)
-            logger.info("Я сохранил %d убежищ: %s", len(self.refuge_ids), self.refuge_ids)
+            logger.info("WorldModel: список убежищ сохранён [count=%d, ids=%s]", len(self.refuge_ids), self.refuge_ids)
 
         # Я НЕ очищаю agents целиком: союзники вне зоны видимости
         # сохраняют последнее известное состояние. Без этого social_factor
@@ -213,7 +212,7 @@ class WorldModel:
 
         for eid in packet.deleted_entity_ids:
             if eid in self.tasks:
-                logger.info("Я удалил сущность entity_id=%d из кэша (ядро удалило из ChangeSet)", eid)
+                logger.info("WorldModel: сущность удалена ядром (ChangeSet) [entity_id=%d]", eid)
                 del self.tasks[eid]
             self.last_seen_tick.pop(eid, None)
 
@@ -233,9 +232,8 @@ class WorldModel:
                         update={"raw_sensor_data": merged_raw},
                     )
                     logger.info(
-                        "Я восстановил position_on_edge=%d для завала entity_id=%d "
-                        "из PROP_BLOCKADES дороги",
-                        road_id, blk_id,
+                        "WorldModel: position_on_edge восстановлен из PROP_BLOCKADES [entity_id=%d, road_id=%d]",
+                        blk_id, road_id,
                     )
 
         if packet.road_blockades:
@@ -251,7 +249,7 @@ class WorldModel:
         self.refresh_blockade_weights()
 
         logger.debug(
-            "Я применил пакет восприятия такта %d: %d сущностей, %d союзников",
+            "WorldModel: пакет восприятия применён [tick=%d, visible_entities=%d, allies=%d]",
             packet.tick,
             len(packet.visible_entities),
             len(packet.ally_states),
@@ -261,8 +259,7 @@ class WorldModel:
         for entity in visible_entities:
             if entity.id not in self.road_graph:
                 logger.debug(
-                    "Я получил сенсорные данные для entity_id=%s, которого нет в графе дорожной сети "
-                    "(ожидаемо для гражданских — они не являются узлами дорожного графа)",
+                    "WorldModel: сенсорные данные для сущности вне дорожного графа (ожидаемо для гражданских) [entity_id=%s]",
                     entity.id,
                 )
 
@@ -271,7 +268,7 @@ class WorldModel:
                 self.tasks[entity.id] = entity
                 apexes = entity.raw_sensor_data.apexes
                 logger.info(
-                    "Я добавил новую сущность в кэш: entity_id=%s, type=%s, apexes_len=%s",
+                    "WorldModel: новая сущность добавлена в кэш [entity_id=%s, type=%s, apexes_len=%s]",
                     entity.id, entity.type.value,
                     len(apexes) if apexes is not None else None,
                 )
@@ -324,7 +321,7 @@ class WorldModel:
             )
 
             self.tasks[entity.id] = merged_entity
-            logger.info("Я обновил сущность в кэше: entity_id=%s", entity.id)
+            logger.info("WorldModel: сущность в кэше обновлена [entity_id=%s]", entity.id)
 
     def _remove_stale_blockades(self, road_blockades: dict[int, list[int]]) -> None:
         stale_ids: set[int] = set()
@@ -343,7 +340,7 @@ class WorldModel:
             self.tasks.pop(entity_id, None)
             self.last_seen_tick.pop(entity_id, None)
             logger.info(
-                "Я удалил stale-завал entity_id=%d: он исчез из PROP_BLOCKADES дороги",
+                "WorldModel: stale-завал удалён (исчез из PROP_BLOCKADES) [entity_id=%d]",
                 entity_id,
             )
 

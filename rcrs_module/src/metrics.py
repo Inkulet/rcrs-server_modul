@@ -172,7 +172,7 @@ class MetricsCollector:
             try:
                 self._write_tick_row(tick_number, total_ms)
             except (OSError, ValueError) as exc:
-                logger.warning("Я не смог записать tick-CSV: %s", exc)
+                logger.warning("Metrics: запись tick-CSV не выполнена — %s", exc)
 
     @contextmanager
     def phase(self, name: str) -> Iterator[None]:
@@ -255,7 +255,7 @@ class MetricsCollector:
             assert self._events_csv_file is not None
             self._events_csv_file.flush()  # type: ignore[attr-defined]
         except (OSError, ValueError) as exc:
-            logger.warning("Я не смог записать event=%s: %s", kind, exc)
+            logger.warning("Metrics: запись события не выполнена [kind=%s]: %s", kind, exc)
 
     def record_communication(self, tick: int, agent_id: int, payload_bytes: int,
                              kind: str = "coord", channel: str = "say") -> None:
@@ -369,7 +369,7 @@ class MetricsCollector:
                 encoding="utf-8",
             )
         except OSError as exc:
-            logger.warning("Я не смог записать summary.json: %s", exc)
+            logger.warning("Metrics: запись summary.json не выполнена — %s", exc)
 
     def close(self) -> None:
         for f in (self._tick_csv_file, self._events_csv_file):
@@ -516,7 +516,7 @@ class MetricsCollector:
         try:
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         except OSError as exc:
-            logger.warning("Я не смог записать %s: %s", path, exc)
+            logger.warning("Metrics: запись отчёта по пути %s не выполнена — %s", path, exc)
 
 
 # Synонимы команд → имена счётчиков, чтобы call-site мог писать

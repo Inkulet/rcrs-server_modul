@@ -182,7 +182,7 @@ def build_ak_connect(
     msg.components[COMP_ENTITY_TYPES].intList.CopyFrom(int_list)
 
     logger.debug(
-        "Я собрал AKConnect: request_id=%d, name=%s, types=%s",
+        "Codec: собран AKConnect [request_id=%d, name=%s, entity_types=%s]",
         request_id, agent_name, entity_types,
     )
     return pack_frame(msg.SerializeToString())
@@ -213,7 +213,7 @@ def build_ak_move(
     msg.components[COMP_DEST_X].intValue = dest_x
     msg.components[COMP_DEST_Y].intValue = dest_y
 
-    logger.debug("Я собрал AKMove: agent=%d, time=%d, path=%s", agent_id, time, path)
+    logger.debug("Codec: собран AKMove [agent_id=%d, time=%d, path=%s]", agent_id, time, path)
     return pack_frame(msg.SerializeToString())
 
 
@@ -223,7 +223,7 @@ def build_ak_rescue(agent_id: int, time: int, target_id: int) -> bytes:
     msg.components[COMP_AGENT_ID].entityID = agent_id
     msg.components[COMP_TIME].intValue     = time
     msg.components[COMP_TARGET].entityID   = target_id
-    logger.debug("Я собрал AKRescue: agent=%d, time=%d, target=%d", agent_id, time, target_id)
+    logger.debug("Codec: собран AKRescue [agent_id=%d, time=%d, target_id=%d]", agent_id, time, target_id)
     return pack_frame(msg.SerializeToString())
 
 
@@ -240,7 +240,7 @@ def build_ak_extinguish(
     msg.components[COMP_TARGET].entityID   = target_id
     msg.components[COMP_WATER].intValue    = water
     logger.debug(
-        "Я собрал AKExtinguish: agent=%d, time=%d, target=%d, water=%d",
+        "Codec: собран AKExtinguish [agent_id=%d, time=%d, target_id=%d, water=%d]",
         agent_id, time, target_id, water,
     )
     return pack_frame(msg.SerializeToString())
@@ -252,7 +252,7 @@ def build_ak_clear(agent_id: int, time: int, target_id: int) -> bytes:
     msg.components[COMP_AGENT_ID].entityID = agent_id
     msg.components[COMP_TIME].intValue     = time
     msg.components[COMP_TARGET].entityID   = target_id
-    logger.debug("Я собрал AKClear: agent=%d, time=%d, target=%d", agent_id, time, target_id)
+    logger.debug("Codec: собран AKClear [agent_id=%d, time=%d, target_id=%d]", agent_id, time, target_id)
     return pack_frame(msg.SerializeToString())
 
 
@@ -264,7 +264,7 @@ def build_ak_clear_area(agent_id: int, time: int, dest_x: int, dest_y: int) -> b
     msg.components[COMP_DEST_X].intValue   = dest_x
     msg.components[COMP_DEST_Y].intValue   = dest_y
     logger.debug(
-        "Я собрал AKClearArea: agent=%d, time=%d, dest=(%d,%d)",
+        "Codec: собран AKClearArea [agent_id=%d, time=%d, dest=(%d,%d)]",
         agent_id, time, dest_x, dest_y,
     )
     return pack_frame(msg.SerializeToString())
@@ -354,7 +354,7 @@ def parse_ka_connect_ok(
                 if PROP_WATER_QUANTITY in props and props[PROP_WATER_QUANTITY].defined:
                     initial_water = props[PROP_WATER_QUANTITY].intValue
                 logger.info(
-                    "Я извлёк начальную позицию агента agent_id=%d: pos=%d, x=%d, y=%d, water=%d",
+                    "Codec: начальная позиция агента извлечена из KAConnectOK [agent_id=%d, pos_id=%d, x=%d, y=%d, water=%d]",
                     agent_id, pos_id, x, y, initial_water,
                 )
 
@@ -416,7 +416,7 @@ def parse_ka_connect_ok(
 
 
     logger.info(
-        "Я разобрал KAConnectOK: agent_id=%d, узлов=%d, рёбер=%d, убежищ=%d, start_pos=%d, water=%d",
+        "Codec: KAConnectOK разобран [agent_id=%d, map_nodes=%d, map_edges=%d, refuges=%d, start_pos=%d, water=%d]",
         agent_id, len(map_nodes), len(map_edges), len(refuge_ids), initial_position.entity_id, initial_water,
     )
     return request_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position, initial_water
@@ -542,7 +542,7 @@ def parse_ka_sense(
                 if civilian_pos_id == agent_id:
                     own_transporting = True
                     logger.debug(
-                        "Я обнаружил перевозимого гражданского entity_id=%d на агенте %d",
+                        "Codec: обнаружен перевозимый гражданский [civilian_id=%d, carrier_agent_id=%d]",
                         eid, agent_id,
                     )
 
@@ -586,7 +586,7 @@ def parse_ka_sense(
 
     if not own_found:
         logger.warning(
-            "Я не нашёл собственного состояния агента agent_id=%d в KASense такта %d",
+            "Codec: собственное состояние агента отсутствует в KASense [agent_id=%d, tick=%d]",
             agent_id, tick,
         )
 
@@ -637,7 +637,7 @@ def parse_ka_sense(
                             heard_target_speakers[target_id] = speaker_id
     if heard_target_ids:
         logger.debug(
-            "Я услышал %d целей от соседних агентов: %s",
+            "Codec: услышаны claim-сообщения от союзников [targets_count=%d, target_ids=%s]",
             len(heard_target_ids), heard_target_ids,
         )
 
@@ -660,7 +660,7 @@ def parse_ka_sense(
     )
 
     logger.debug(
-        "Я разобрал KASense такта %d: сущностей=%d, союзников=%d",
+        "Codec: KASense разобран [tick=%d, visible_entities=%d, allies=%d]",
         tick, len(visible_entities), len(ally_states),
     )
     return packet

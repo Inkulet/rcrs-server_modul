@@ -8,17 +8,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== Запуск агентов RCRS на ${HOST}:${PORT} ==="
 
-for i in $(seq 1 46); do
+for i in $(seq 1 50); do
     python3 "${SCRIPT_DIR}/main.py" --agent-type FIRE_BRIGADE --host "$HOST" --port "$PORT" &
 done
 echo "Запущено 30 FIRE_BRIGADE"
 
-for i in $(seq 1 30); do
+for i in $(seq 1 50); do
     python3 "${SCRIPT_DIR}/main.py" --agent-type AMBULANCE_TEAM --host "$HOST" --port "$PORT" &
 done
 echo "Запущено 30 AMBULANCE_TEAM"
 
-for i in $(seq 1 40); do
+for i in $(seq 1 50); do
     python3 "${SCRIPT_DIR}/main.py" --agent-type POLICE_FORCE --host "$HOST" --port "$PORT" &
 done
 echo "Запущено 30 POLICE_FORCE"
@@ -29,6 +29,15 @@ echo "Запущен FIRE_STATION"
 python3 "${SCRIPT_DIR}/main.py" --agent-type FIRE_STATION --host "$HOST" --port "$PORT" &
 echo "Запущен FIRE_STATION"
 
+python3 "${SCRIPT_DIR}/main.py" --agent-type AMBULANCE_CENTRE --host "$HOST" --port "$PORT" &
+echo "Запущен AMBULANCE_CENTRE"
+
+python3 "${SCRIPT_DIR}/main.py" --agent-type AMBULANCE_CENTRE --host "$HOST" --port "$PORT" &
+echo "Запущен AMBULANCE_CENTRE"
+python3 "${SCRIPT_DIR}/main.py" --agent-type AMBULANCE_CENTRE --host "$HOST" --port "$PORT" &
+echo "Запущен AMBULANCE_CENTRE"
+python3 "${SCRIPT_DIR}/main.py" --agent-type AMBULANCE_CENTRE --host "$HOST" --port "$PORT" &
+echo "Запущен AMBULANCE_CENTRE"
 python3 "${SCRIPT_DIR}/main.py" --agent-type AMBULANCE_CENTRE --host "$HOST" --port "$PORT" &
 echo "Запущен AMBULANCE_CENTRE"
 
