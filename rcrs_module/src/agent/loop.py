@@ -51,6 +51,7 @@ from network.client import RCRSClient
 from network.codec import (
     AGENT_TYPE_TO_SAY_ROLE,
     SAY_KIND_BURIED_HELP,
+    SAY_KIND_SEARCH_CLAIM,
     SAY_KIND_TARGET_CLAIM,
     SAY_ROLE_UNKNOWN,
     encode_say_payload,
@@ -190,6 +191,81 @@ def _min_distance_blockade_to_important(
     return min_d
 
 
+def _search_partition(
+    agent_state,
+    world_model: WorldModel,
+) -> tuple[int | None, int | None]:
+    same_role_ids = {agent_state.id}
+    for ally in world_model.agents.values():
+        if ally.type == agent_state.type:
+            same_role_ids.add(ally.id)
+
+    ordered_ids = sorted(same_role_ids)
+    if len(ordered_ids) <= 1:
+        return None, None
+
+    return ordered_ids.index(agent_state.id), len(ordered_ids)
+
+
+def _is_transport_ready_civilian(
+    entity: VisibleEntity,
+    refuge_ids: list[int],
+) -> bool:
+    if entity.type != EntityType.CIVILIAN or entity.is_ally:
+        return False
+
+    raw = entity.raw_sensor_data
+    if raw.hp is not None and raw.hp <= 0:
+        return False
+    if raw.position_on_edge is None or raw.position_on_edge in refuge_ids:
+        return False
+    if raw.buriedness is not None and raw.buriedness > 0:
+        return False
+    if raw.damage is None or raw.damage <= 0:
+        return False
+
+    return True
+
+
+def _prioritize_role_tasks(
+    agent_type: AgentType,
+    tasks: list[VisibleEntity],
+    refuge_ids: list[int],
+) -> list[VisibleEntity]:
+    if agent_type == AgentType.FIRE_BRIGADE:
+        rescue_tasks = [
+            entity for entity in tasks
+            if entity.type in (EntityType.CIVILIAN, EntityType.HUMAN)
+        ]
+        if rescue_tasks:
+            return rescue_tasks
+
+    if agent_type == AgentType.AMBULANCE_TEAM:
+        transport_ready = [
+            entity for entity in tasks
+            if _is_transport_ready_civilian(entity, refuge_ids)
+        ]
+        if transport_ready:
+            return transport_ready
+
+    return tasks
+
+
+def _same_role_claim_exclusions(
+    claims: dict[int, tuple[int, int, int]],
+    own_role: int,
+    agent_id: int,
+) -> set[int]:
+    excluded: set[int] = set()
+    for target_id, (_tick, role_code, speaker_id) in claims.items():
+        if role_code != own_role:
+            continue
+        if speaker_id <= 0 or speaker_id >= agent_id:
+            continue
+        excluded.add(target_id)
+    return excluded
+
+
 def run_field_agent(
     client: RCRSClient,
     world_model: WorldModel,
@@ -232,6 +308,7 @@ def run_field_agent(
     _session_weights = (aggregator.w_c, aggregator.w_d, aggregator.w_e, aggregator.w_n)
 
     recent_target_claims: dict[int, tuple[int, int, int]] = {}
+    recent_search_claims: dict[int, tuple[int, int, int]] = {}
     own_say_role = AGENT_TYPE_TO_SAY_ROLE.get(agent_type, SAY_ROLE_UNKNOWN)
 
     try:
@@ -373,13 +450,9 @@ def run_field_agent(
                 n_already_rescued_filtered=n_already_f,
             )
 
-            if agent_type == AgentType.FIRE_BRIGADE:
-                rescue_tasks = [
-                    entity for entity in filtered_tasks
-                    if entity.type in (EntityType.CIVILIAN, EntityType.HUMAN)
-                ]
-                if rescue_tasks:
-                    filtered_tasks = rescue_tasks
+            filtered_tasks = _prioritize_role_tasks(
+                agent_type, filtered_tasks, world_model.refuge_ids,
+            )
 
             with metrics.phase("utility"):
               utilities: dict[int, float] = {}
@@ -439,6 +512,10 @@ def run_field_agent(
                 role_code = packet.heard_target_roles.get(tid, SAY_ROLE_UNKNOWN)
                 speaker_id = packet.heard_target_speakers.get(tid, 0)
                 recent_target_claims[tid] = (packet.tick, role_code, speaker_id)
+            for tid in packet.heard_search_target_ids:
+                role_code = packet.heard_search_target_roles.get(tid, SAY_ROLE_UNKNOWN)
+                speaker_id = packet.heard_search_target_speakers.get(tid, 0)
+                recent_search_claims[tid] = (packet.tick, role_code, speaker_id)
 
             expired = [
                 tid for tid, (last_tick, _role_code, _speaker_id) in recent_target_claims.items()
@@ -446,6 +523,12 @@ def run_field_agent(
             ]
             for tid in expired:
                 recent_target_claims.pop(tid, None)
+            expired_search = [
+                tid for tid, (last_tick, _role_code, _speaker_id) in recent_search_claims.items()
+                if packet.tick - last_tick > RECENT_ALLY_TARGET_TICKS
+            ]
+            for tid in expired_search:
+                recent_search_claims.pop(tid, None)
 
             if current_target_id is not None and current_target_id in recent_target_claims:
                 _last_tick, role_code, speaker_id = recent_target_claims[current_target_id]
@@ -639,6 +722,7 @@ def run_field_agent(
                             client, packet, agent_state, agent_node_id,
                             world_model, visited_nodes,
                             exploration_target_node, exploration_start_tick,
+                            recent_search_claims, own_say_role,
                         )
                     action_kind_dispatched = "MOVE"
 
@@ -779,21 +863,33 @@ def _explore_and_update(
     visited_nodes: set[int],
     exploration_target_node: int | None,
     exploration_start_tick: int,
+    recent_search_claims: dict[int, tuple[int, int, int]],
+    own_say_role: int,
 ) -> tuple[int | None, int]:
     from world.entities import AgentState, PerceptionPacket
     pkt: PerceptionPacket = packet  # type: ignore[assignment]
     state: AgentState = agent_state  # type: ignore[assignment]
 
     if state.type in (AgentType.FIRE_BRIGADE, AgentType.AMBULANCE_TEAM):
+        partition_index, partition_count = _search_partition(state, world_model)
+        excluded_targets = _same_role_claim_exclusions(
+            recent_search_claims, own_say_role, state.id,
+        )
         search_target = exploration_target_node
         if (
             search_target is None
             or search_target == agent_node_id
             or not world_model.road_graph.has_node(search_target)
             or world_model.road_graph.nodes[search_target].get("area_type") != "BUILDING"
+            or search_target in excluded_targets
         ):
             search_target = pick_search_target(
-                world_model.road_graph, agent_node_id, visited=visited_nodes,
+                world_model.road_graph,
+                agent_node_id,
+                visited=visited_nodes,
+                partition_index=partition_index,
+                partition_count=partition_count,
+                excluded=excluded_targets,
             )
         if search_target is not None:
             search_path = plan_exploration_path(
@@ -802,6 +898,15 @@ def _explore_and_update(
             )
             if search_path and len(search_path) > 1:
                 client.send_move(pkt.tick, search_path)
+                try:
+                    client.send_say(
+                        pkt.tick,
+                        encode_say_payload(
+                            SAY_KIND_SEARCH_CLAIM, search_target, own_say_role,
+                        ),
+                    )
+                except (ConnectionError, OSError, struct.error) as exc:
+                    logger.warning("Я не смог отправить search-claim: %s", exc)
                 logger.info(
                     "Я иду к зданию для поиска пострадавших node=%d: %d шагов, такт=%d",
                     search_target, len(search_path), pkt.tick,
@@ -853,4 +958,10 @@ def _explore_and_update(
     return exploration_target_node, exploration_start_tick
 
 
-__all__ = ["run_field_agent"]
+__all__ = [
+    "run_field_agent",
+    "_search_partition",
+    "_is_transport_ready_civilian",
+    "_prioritize_role_tasks",
+    "_same_role_claim_exclusions",
+]

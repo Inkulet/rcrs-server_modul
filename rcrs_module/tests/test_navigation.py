@@ -256,3 +256,34 @@ class TestPickSearchTarget:
     def test_returns_nearest_building_when_none_visited(self, linear_graph: nx.Graph) -> None:
         target = pick_search_target(linear_graph, start_node=1, visited=set())
         assert target == 3
+
+    def test_respects_search_partition_when_sector_has_candidates(
+        self,
+        linear_graph: nx.Graph,
+    ) -> None:
+        linear_graph.add_node(5, x=4000, y=0, area_type="BUILDING")
+        linear_graph.add_edge(4, 5, weight=1000.0)
+
+        target = pick_search_target(
+            linear_graph,
+            start_node=1,
+            visited=set(),
+            partition_index=1,
+            partition_count=2,
+        )
+
+        assert target == 4
+
+    def test_falls_back_to_global_search_when_sector_is_exhausted(
+        self,
+        linear_graph: nx.Graph,
+    ) -> None:
+        target = pick_search_target(
+            linear_graph,
+            start_node=1,
+            visited={4},
+            partition_index=1,
+            partition_count=2,
+        )
+
+        assert target == 3

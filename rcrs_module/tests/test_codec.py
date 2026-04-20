@@ -60,6 +60,7 @@ from network.codec import (
     build_ak_unload,
     SAY_KIND_BLOCKADE_REPORT,
     SAY_KIND_BURIED_HELP,
+    SAY_KIND_SEARCH_CLAIM,
     SAY_KIND_TARGET_CLAIM,
     SAY_ROLE_AMBULANCE_TEAM,
     pack_frame,
@@ -482,6 +483,23 @@ class TestParseKaSense:
         assert packet.heard_target_ids == set()
         assert packet.heard_target_roles == {}
         assert packet.heard_target_speakers == {}
+
+    def test_search_claim_is_parsed_separately_from_target_claim(self) -> None:
+        proto = self._make_sense(agent_id=1, tick=3)
+        _append_hearing_say(
+            proto,
+            speaker_id=77,
+            payload=encode_say_payload(
+                SAY_KIND_SEARCH_CLAIM, 701, SAY_ROLE_AMBULANCE_TEAM,
+            ),
+        )
+
+        packet = parse_ka_sense(proto, agent_id=1, agent_type=AgentType.FIRE_BRIGADE)
+
+        assert packet.heard_target_ids == set()
+        assert packet.heard_search_target_ids == {701}
+        assert packet.heard_search_target_roles == {701: SAY_ROLE_AMBULANCE_TEAM}
+        assert packet.heard_search_target_speakers == {701: 77}
 
     def test_building_with_fieryness_zero_parses_ok(self) -> None:
         """Я проверяю: fieryness=0 (не горит) не вызывает ValidationError после исправления ge=0."""

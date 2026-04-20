@@ -257,6 +257,9 @@ def pick_search_target(
     graph: nx.Graph,
     start_node: int,
     visited: set[int] | None = None,
+    partition_index: int | None = None,
+    partition_count: int | None = None,
+    excluded: set[int] | None = None,
 ) -> int | None:
     if not graph.has_node(start_node):
         logger.warning("Я не нашёл start_node=%d в графе для search target", start_node)
@@ -286,6 +289,31 @@ def pick_search_target(
         unvisited = [node_id for node_id in candidates if node_id not in visited]
         if unvisited:
             candidates = unvisited
+
+    if excluded:
+        filtered = [node_id for node_id in candidates if node_id not in excluded]
+        if filtered:
+            candidates = filtered
+
+    if (
+        partition_index is not None
+        and partition_count is not None
+        and partition_count > 1
+        and 0 <= partition_index < partition_count
+    ):
+        partitioned = [
+            node_id
+            for idx, node_id in enumerate(sorted(candidates))
+            if idx % partition_count == partition_index
+        ]
+        if partitioned:
+            candidates = partitioned
+        else:
+            logger.debug(
+                "Я не нашёл building-целей в своём секторе поиска "
+                "(sector=%d/%d), переключаюсь на глобальный fallback",
+                partition_index, partition_count,
+            )
 
     best_target: int | None = None
     best_distance: float = float("inf")

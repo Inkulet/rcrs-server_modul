@@ -132,6 +132,9 @@ class PerceptionPacket(BaseEntityModel):
     heard_target_roles: dict[int, StrictInt] = Field(default_factory=dict)
     # target_id -> agent_id того, кто заявил claim.
     heard_target_speakers: dict[int, StrictInt] = Field(default_factory=dict)
+    heard_search_target_ids: set[int] = Field(default_factory=set)
+    heard_search_target_roles: dict[int, StrictInt] = Field(default_factory=dict)
+    heard_search_target_speakers: dict[int, StrictInt] = Field(default_factory=dict)
 
     # Обратный индекс blockade_id → road_id, извлечённый из PROP_BLOCKADES
     # дорожных сущностей. Используется как резервный источник position_on_edge

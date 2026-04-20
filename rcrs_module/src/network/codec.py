@@ -113,6 +113,7 @@ COMP_MESSAGE  = _STD_CMP | 6  # 0x1406  Message — содержимое AKSay/A
 SAY_KIND_TARGET_CLAIM = 1
 SAY_KIND_BURIED_HELP = 2
 SAY_KIND_BLOCKADE_REPORT = 3
+SAY_KIND_SEARCH_CLAIM = 4
 
 SAY_ROLE_UNKNOWN = 0
 SAY_ROLE_FIRE_BRIGADE = 1
@@ -605,6 +606,9 @@ def parse_ka_sense(
     heard_target_ids: set[int] = set()
     heard_target_roles: dict[int, int] = {}
     heard_target_speakers: dict[int, int] = {}
+    heard_search_target_ids: set[int] = set()
+    heard_search_target_roles: dict[int, int] = {}
+    heard_search_target_speakers: dict[int, int] = {}
     if COMP_HEARING in proto.components:
         hearing_comp = proto.components[COMP_HEARING]
         if hearing_comp.HasField("commandList"):
@@ -620,6 +624,10 @@ def parse_ka_sense(
                             heard_target_ids.add(target_id)
                             heard_target_roles[target_id] = role_code
                             heard_target_speakers[target_id] = speaker_id
+                        elif kind == SAY_KIND_SEARCH_CLAIM and target_id > 0:
+                            heard_search_target_ids.add(target_id)
+                            heard_search_target_roles[target_id] = role_code
+                            heard_search_target_speakers[target_id] = speaker_id
                     elif len(raw) >= 4:
                         target_id = struct.unpack(">i", raw[:4])[0]
                         if target_id > 0:
@@ -643,6 +651,9 @@ def parse_ka_sense(
         heard_target_ids=heard_target_ids,
         heard_target_roles=heard_target_roles,
         heard_target_speakers=heard_target_speakers,
+        heard_search_target_ids=heard_search_target_ids,
+        heard_search_target_roles=heard_search_target_roles,
+        heard_search_target_speakers=heard_search_target_speakers,
         blockade_to_road=blockade_to_road,
         road_blockades=road_blockades,
     )
@@ -714,6 +725,7 @@ __all__ = [
     "MSG_AK_CLEAR", "MSG_AK_LOAD", "MSG_AK_UNLOAD", "MSG_AK_REST",
     "MSG_AK_SAY", "COMP_MESSAGE",
     "SAY_KIND_TARGET_CLAIM", "SAY_KIND_BURIED_HELP", "SAY_KIND_BLOCKADE_REPORT",
+    "SAY_KIND_SEARCH_CLAIM",
     "SAY_ROLE_UNKNOWN", "SAY_ROLE_FIRE_BRIGADE", "SAY_ROLE_AMBULANCE_TEAM",
     "SAY_ROLE_POLICE_FORCE", "AGENT_TYPE_TO_SAY_ROLE", "encode_say_payload",
     # Фреймирование
