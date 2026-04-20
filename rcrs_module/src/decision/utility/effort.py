@@ -21,11 +21,11 @@ def effort_for_ambulance(entity: VisibleEntity, max_buriedness: float = MAX_BURI
     try:
         buriedness = entity.raw_sensor_data.buriedness
         if buriedness is None:
-            logger.debug("Я пропускаю эффорт: нет buriedness для entity_id=%s", entity.id)
+            logger.debug("Фактор effort (ambulance) пропущен: отсутствует buriedness [entity_id=%s]", entity.id)
             return 0.0
         return _clamp_to_unit(buriedness / max_buriedness)
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при расчете трудоемкости для entity_id=%s", entity.id)
+        logger.warning("ZeroDivisionError в effort (ambulance) [entity_id=%s] — возвращается 0.0", entity.id)
         return 0.0
 
 
@@ -35,12 +35,12 @@ def effort_for_fire(entity: VisibleEntity, max_total_area: float = MAX_TOTAL_ARE
         ground_area = entity.raw_sensor_data.ground_area
         floors = entity.raw_sensor_data.floors
         if ground_area is None or floors is None:
-            logger.debug("Я пропускаю эффорт: нет ground_area/floors для entity_id=%s", entity.id)
+            logger.debug("Фактор effort (fire) пропущен: отсутствует ground_area/floors [entity_id=%s]", entity.id)
             return 0.0
         total_area = ground_area * floors
         return _clamp_to_unit(total_area / max_total_area)
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при расчете трудоемкости для entity_id=%s", entity.id)
+        logger.warning("ZeroDivisionError в effort (fire) [entity_id=%s] — возвращается 0.0", entity.id)
         return 0.0
 
 
@@ -49,11 +49,11 @@ def effort_for_police(entity: VisibleEntity, max_repair_cost: float = MAX_REPAIR
     try:
         repair_cost = entity.raw_sensor_data.repair_cost
         if repair_cost is None:
-            logger.debug("Я пропускаю эффорт: нет repair_cost для entity_id=%s", entity.id)
+            logger.debug("Фактор effort (police) пропущен: отсутствует repair_cost [entity_id=%s]", entity.id)
             return 0.0
         return _clamp_to_unit(repair_cost / max_repair_cost)
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при расчете трудоемкости для entity_id=%s", entity.id)
+        logger.warning("ZeroDivisionError в effort (police) [entity_id=%s] — возвращается 0.0", entity.id)
         return 0.0
 
 
@@ -67,7 +67,7 @@ def compute_effort(
 
     try:
         if entity is None:
-            logger.warning("Я не получил сущность для расчета трудоемкости: agent_id=%s", agent_state.id)
+            logger.warning("Сущность для расчёта effort не передана [agent_id=%s]", agent_state.id)
             return 0.0
 
         if agent_state.type == AgentType.AMBULANCE_TEAM:
@@ -83,7 +83,7 @@ def compute_effort(
 
         return 0.0
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при общем расчете трудоемкости: agent_id=%s", agent_state.id)
+        logger.warning("ZeroDivisionError в compute_effort [agent_id=%s] — возвращается 0.0", agent_state.id)
         return 0.0
 
 

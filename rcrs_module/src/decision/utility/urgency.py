@@ -28,11 +28,11 @@ def urgency_for_ambulance(
         hp = entity.raw_sensor_data.hp
         damage = entity.raw_sensor_data.damage
         if hp is None or damage is None:
-            logger.warning("Я не могу вычислить TTL без hp и damage для entity_id=%s", entity.id)
+            logger.warning("Urgency (ambulance): TTL не вычислен — отсутствуют hp/damage [entity_id=%s]", entity.id)
             return 0.0
 
         if t_travel < 0 or t_work < 0:
-            logger.warning("Я получил отрицательное время пути или работы для entity_id=%s", entity.id)
+            logger.warning("Urgency (ambulance): отрицательные t_travel/t_work [entity_id=%s]", entity.id)
             return 0.0
 
         if damage <= 0:
@@ -45,7 +45,7 @@ def urgency_for_ambulance(
 
         return _clamp_to_unit(1.0 - ttl / t_max_ttl)
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при расчете срочности для entity_id=%s", entity.id)
+        logger.warning("ZeroDivisionError в urgency (ambulance) [entity_id=%s] — возвращается 0.0", entity.id)
         return 0.0
 
 
@@ -54,13 +54,13 @@ def urgency_for_fire(entity: VisibleEntity, t_max: float = T_MAX) -> float:
         temperature = entity.raw_sensor_data.temperature
         fieryness = entity.raw_sensor_data.fieryness
         if temperature is None or fieryness is None:
-            logger.warning("Я не могу вычислить срочность без temperature и fieryness для entity_id=%s", entity.id)
+            logger.warning("Urgency (fire): отсутствуют temperature/fieryness [entity_id=%s]", entity.id)
             return 0.0
         if fieryness not in {1, 2, 3}:
             return 0.0
         return _clamp_to_unit(temperature / t_max)
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при расчете срочности для entity_id=%s", entity.id)
+        logger.warning("ZeroDivisionError в urgency (fire) [entity_id=%s] — возвращается 0.0", entity.id)
         return 0.0
 
 
@@ -69,7 +69,7 @@ def urgency_for_police(task_distance: float, epsilon: float = EPSILON) -> float:
         return _clamp_to_unit(1.0 / (task_distance + epsilon))
 
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при расчете срочности для полиции")
+        logger.warning("ZeroDivisionError в urgency (police) — возвращается 0.0")
         return 0.0
 
 
@@ -87,20 +87,20 @@ def compute_urgency(
     try:
         if agent_state.type == AgentType.AMBULANCE_TEAM:
             if entity is None or t_travel is None or t_work is None:
-                logger.warning("Я не получил достаточно данных для срочности медика: agent_id=%s", agent_state.id)
+                logger.warning("Urgency (ambulance): недостаточно данных (entity/t_travel/t_work) [agent_id=%s]", agent_state.id)
                 return 0.0
             return urgency_for_ambulance(entity, t_travel, t_work, stable_value)
 
         if agent_state.type == AgentType.FIRE_BRIGADE:
             if entity is None:
-                logger.warning("Я не получил сущность для срочности пожарного: agent_id=%s", agent_state.id)
+                logger.warning("Urgency (fire): сущность не передана [agent_id=%s]", agent_state.id)
                 return 0.0
             # Для заваленных людей пожарный играет роль спасателя:
             # приоритет рассчитываю по TTL (hp/damage), как у медика.
             if entity.type in (EntityType.CIVILIAN, EntityType.HUMAN):
                 if t_travel is None or t_work is None:
                     logger.warning(
-                        "Я не получил t_travel/t_work для спасения пожарным: agent_id=%s",
+                        "Urgency (fire/rescue): отсутствуют t_travel/t_work [agent_id=%s]",
                         agent_state.id,
                     )
                     return 0.0
@@ -109,13 +109,13 @@ def compute_urgency(
 
         if agent_state.type == AgentType.POLICE_FORCE:
             if task_distance is None:
-                logger.warning("Я не получил расстояние для срочности полиции: agent_id=%s", agent_state.id)
+                logger.warning("Urgency (police): task_distance не передан [agent_id=%s]", agent_state.id)
                 return 0.0
             return urgency_for_police(task_distance, epsilon)
 
         return 0.0
     except ZeroDivisionError:
-        logger.warning("Я поймал деление на ноль при общем расчете срочности: agent_id=%s", agent_state.id)
+        logger.warning("ZeroDivisionError в compute_urgency [agent_id=%s] — возвращается 0.0", agent_state.id)
         return 0.0
 
 

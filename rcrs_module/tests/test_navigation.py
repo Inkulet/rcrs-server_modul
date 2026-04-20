@@ -11,6 +11,7 @@ from action.navigation import (
     compute_path_distance,
     fill_path_distances,
     nearest_refuge_path,
+    pick_search_target,
 )
 from world.entities import (
     ComputedMetrics,
@@ -30,9 +31,9 @@ def linear_graph() -> nx.Graph:
     """Я создаю граф из четырёх узлов по прямой линии: 1 - 2 - 3 - 4."""
     g = nx.Graph()
     g.add_node(1, x=0,    y=0)
-    g.add_node(2, x=1000, y=0)
-    g.add_node(3, x=2000, y=0)
-    g.add_node(4, x=3000, y=0)
+    g.add_node(2, x=1000, y=0, area_type="ROAD")
+    g.add_node(3, x=2000, y=0, area_type="BUILDING")
+    g.add_node(4, x=3000, y=0, area_type="BUILDING")
     g.add_edge(1, 2, weight=1000.0)
     g.add_edge(2, 3, weight=1000.0)
     g.add_edge(3, 4, weight=1000.0)
@@ -97,6 +98,51 @@ class TestComputePath:
         """Я проверяю, что отсутствующий узел возвращает пустой список."""
         path = compute_path(linear_graph, 1, 999)
         assert path == []
+
+    def test_reuses_cached_path_on_same_graph_revision(
+        self,
+        linear_graph: nx.Graph,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        linear_graph.graph["revision"] = 7
+        calls = {"count": 0}
+        original = nx.astar_path
+
+        def counted_astar(*args: object, **kwargs: object) -> list[int]:
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr("action.navigation.nx.astar_path", counted_astar)
+
+        first = compute_path(linear_graph, 1, 4)
+        second = compute_path(linear_graph, 1, 4)
+
+        assert first == [1, 2, 3, 4]
+        assert second == [1, 2, 3, 4]
+        assert calls["count"] == 1
+
+    def test_invalidates_cached_path_after_revision_change(
+        self,
+        linear_graph: nx.Graph,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        linear_graph.graph["revision"] = 11
+        calls = {"count": 0}
+        original = nx.astar_path
+
+        def counted_astar(*args: object, **kwargs: object) -> list[int]:
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr("action.navigation.nx.astar_path", counted_astar)
+
+        first = compute_path(linear_graph, 1, 4)
+        linear_graph.graph["revision"] = 12
+        second = compute_path(linear_graph, 1, 4)
+
+        assert first == [1, 2, 3, 4]
+        assert second == [1, 2, 3, 4]
+        assert calls["count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -200,3 +246,44 @@ class TestNearestRefugePath:
         """Я проверяю, что агент уже в убежище возвращает путь из одного узла."""
         path = nearest_refuge_path(linear_graph, from_id=2, refuge_ids=[2])
         assert path == [2]
+
+
+class TestPickSearchTarget:
+    def test_prefers_nearest_unvisited_building(self, linear_graph: nx.Graph) -> None:
+        target = pick_search_target(linear_graph, start_node=1, visited={3})
+        assert target == 4
+
+    def test_returns_nearest_building_when_none_visited(self, linear_graph: nx.Graph) -> None:
+        target = pick_search_target(linear_graph, start_node=1, visited=set())
+        assert target == 3
+
+    def test_respects_search_partition_when_sector_has_candidates(
+        self,
+        linear_graph: nx.Graph,
+    ) -> None:
+        linear_graph.add_node(5, x=4000, y=0, area_type="BUILDING")
+        linear_graph.add_edge(4, 5, weight=1000.0)
+
+        target = pick_search_target(
+            linear_graph,
+            start_node=1,
+            visited=set(),
+            partition_index=1,
+            partition_count=2,
+        )
+
+        assert target == 4
+
+    def test_falls_back_to_global_search_when_sector_is_exhausted(
+        self,
+        linear_graph: nx.Graph,
+    ) -> None:
+        target = pick_search_target(
+            linear_graph,
+            start_node=1,
+            visited={4},
+            partition_index=1,
+            partition_count=2,
+        )
+
+        assert target == 3

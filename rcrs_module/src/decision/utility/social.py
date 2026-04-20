@@ -25,7 +25,7 @@ def social_factor(
 ) -> float:
     if radius <= 0:
         logger.warning(
-            "Я получил неположительный радиус для социального фактора: radius=%.2f",
+            "Social factor: неположительный радиус [radius=%.2f] — возвращается 0.0",
             radius,
         )
         return 0.0
@@ -39,7 +39,7 @@ def social_factor(
     total = len(same_type_agents)
     if total == 0:
         logger.debug(
-            "Я не нашел однотипных агентов при расчете социального фактора для цели entity_id=%s",
+            "Social factor: однотипные агенты не найдены [target_id=%s] — возвращается 0.0",
             target_position.entity_id,
         )
         return 0.0
@@ -54,15 +54,15 @@ def social_factor(
         result = float(count) / float(total)
     except ZeroDivisionError:
         logger.warning(
-            "Я поймал деление на ноль при нормировке социального фактора для цели entity_id=%s",
+            "ZeroDivisionError в social_factor [target_id=%s] — возвращается 0.0",
             target_position.entity_id,
         )
         return 0.0
 
     logger.debug(
-        "Я рассчитал f_social=%.4f для цели entity_id=%s: %d из %d агентов в радиусе %.0f",
-        result,
+        "Social factor вычислен [target_id=%s, f_social=%.4f, agents_in_radius=%d/%d, radius=%.0f]",
         target_position.entity_id,
+        result,
         count,
         total,
         radius,

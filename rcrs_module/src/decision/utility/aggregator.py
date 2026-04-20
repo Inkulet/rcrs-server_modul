@@ -20,13 +20,13 @@ class UtilityAggregator:
     def __init__(self, w_c: float, w_d: float, w_e: float, w_n: float) -> None:
         if any(w < 0 for w in (w_c, w_d, w_e, w_n)):
             raise ValueError(
-                f"Я ожидаю неотрицательные веса: w_c={w_c}, w_d={w_d}, w_e={w_e}, w_n={w_n}"
+                f"UtilityAggregator: ожидаются неотрицательные веса [w_c={w_c}, w_d={w_d}, w_e={w_e}, w_n={w_n}]"
             )
         weight_sum = w_c + w_d + w_e + w_n
 
         if abs(weight_sum - 1.0) > 1e-6:
             raise ValueError(
-                f"Я ожидаю веса с суммой 1.0, получено {weight_sum:.6f}"
+                f"UtilityAggregator: сумма весов должна быть равна 1.0 [actual={weight_sum:.6f}]"
             )
 
         self.w_c = w_c
@@ -73,12 +73,12 @@ class UtilityAggregator:
             utility = (
                 self.w_c * f_urgency
                 - self.w_d * f_dist
-                + self.w_e * f_effort
+                - self.w_e * f_effort
                 - self.w_n * f_social
             )
             return utility
         except ZeroDivisionError:
-            logger.warning("Я поймал деление на ноль при вычислении полезности")
+            logger.warning("ZeroDivisionError при вычислении полезности — возвращается U=0.0")
             return 0.0
 
 

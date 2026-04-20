@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from config import AVERAGE_SPEED, C_SWITCH, KERNEL_TIMEOUT
+from config import AVERAGE_SPEED, C_SWITCH, FIRE_WEIGHTS_OVERRIDE, KERNEL_TIMEOUT
 from agent.loop import run_field_agent
 from action.selection import TargetSelector
 from decision.filters.pre_filter import PreFilterDispatcher

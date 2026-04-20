@@ -34,21 +34,21 @@ def bootstrap_and_run(
         except (ConnectionRefusedError, TimeoutError, OSError) as exc:
             if attempt == MAX_CONNECT_RETRIES:
                 logger.error(
-                    "Я исчерпал %d попыток подключения, завершаю работу: %s",
+                    "Bootstrap: исчерпаны все попытки подключения к ядру, агент завершает работу [attempts=%d]: %s",
                     MAX_CONNECT_RETRIES, exc,
                 )
                 return
-            logger.info("Я жду готовности ядра (попытка %d/%d): %s", attempt, MAX_CONNECT_RETRIES, exc)
+            logger.info("Bootstrap: ожидание готовности ядра [attempt=%d/%d]: %s", attempt, MAX_CONNECT_RETRIES, exc)
             time.sleep(3)
 
     try:
         agent_id = client.handshake(agent_name, agent_type)
         logger.info(
-            "Я завершил рукопожатие: agent_id=%d, agent_type=%s",
+            "Bootstrap: рукопожатие завершено [agent_id=%d, agent_type=%s]",
             agent_id, agent_type.value,
         )
     except (ConnectionError, TimeoutError, OSError) as exc:
-        logger.error("Я не смог провести рукопожатие: %s", exc)
+        logger.error("Bootstrap: рукопожатие не выполнено — %s", exc)
         client.disconnect()
         return
 

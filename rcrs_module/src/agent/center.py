@@ -16,7 +16,7 @@ CENTER_AGENT_TYPES: frozenset[AgentType] = frozenset({
 
 
 def run_center_agent(client: RCRSClient, agent_type: AgentType) -> None:
-    logger.info("Я запускаю центральный агент: type=%s", agent_type.value)
+    logger.info("CenterAgent: запуск центрального агента [agent_type=%s]", agent_type.value)
 
     try:
         while True:
@@ -25,14 +25,14 @@ def run_center_agent(client: RCRSClient, agent_type: AgentType) -> None:
             except TimeoutError:
                 continue
             except (ConnectionError, OSError) as exc:
-                logger.error("Я потерял соединение центрального агента: %s", exc)
+                logger.error("CenterAgent: соединение с ядром потеряно [agent_type=%s]: %s", agent_type.value, exc)
                 break
 
             client.send_rest(packet.tick)
-            logger.debug("Центральный агент %s: AKRest, такт=%d", agent_type.value, packet.tick)
+            logger.debug("CenterAgent: отправлен AKRest [agent_type=%s, tick=%d]", agent_type.value, packet.tick)
 
     except KeyboardInterrupt:
-        logger.info("Я завершаю центральный агент %s по сигналу", agent_type.value)
+        logger.info("CenterAgent: получен KeyboardInterrupt, завершение работы [agent_type=%s]", agent_type.value)
     finally:
         client.disconnect()
 

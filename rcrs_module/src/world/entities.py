@@ -35,7 +35,7 @@ class BaseEntityModel(BaseModel):
         try:
             return cls.model_validate(data)
         except ValidationError as exc:
-            logger.error("Я получил некорректные данные для %s: %s", cls.__name__, exc)
+            logger.error("Ошибка валидации Pydantic-модели %s: %s", cls.__name__, exc)
             return None
 
 
@@ -102,6 +102,7 @@ class MapNode(BaseEntityModel):
     entity_id: StrictInt = Field(..., ge=0)
     x: StrictInt
     y: StrictInt
+    area_type: Optional[str] = Field(default=None)
     # Плоский массив координат вершин полигона Area [x0, y0, x1, y1, ...].
     # Нужен для проверки пересечения линии «агент → следующий узел»
     # с границами road (intersects_area_edge).
@@ -127,6 +128,13 @@ class PerceptionPacket(BaseEntityModel):
     deleted_entity_ids: List[StrictInt] = Field(default_factory=list)
 
     heard_target_ids: set[int] = Field(default_factory=set)
+    # target_id -> role_code из broadcast target-claim. 0 означает legacy/unknown.
+    heard_target_roles: dict[int, StrictInt] = Field(default_factory=dict)
+    # target_id -> agent_id того, кто заявил claim.
+    heard_target_speakers: dict[int, StrictInt] = Field(default_factory=dict)
+    heard_search_target_ids: set[int] = Field(default_factory=set)
+    heard_search_target_roles: dict[int, StrictInt] = Field(default_factory=dict)
+    heard_search_target_speakers: dict[int, StrictInt] = Field(default_factory=dict)
 
     # Обратный индекс blockade_id → road_id, извлечённый из PROP_BLOCKADES
     # дорожных сущностей. Используется как резервный источник position_on_edge

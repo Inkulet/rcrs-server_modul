@@ -121,6 +121,24 @@ class TestMockSendCommands:
     def test_send_rest_mock(self, mock_client: RCRSClient) -> None:
         mock_client.send_rest(time=1)
 
+    def test_send_say_skipped_when_radio_disabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client = RCRSClient(host="localhost", port=7000, mock=False)
+        client._agent_id = 1
+        sent = {"count": 0}
+
+        def fake_send_command(_frame: bytes) -> None:
+            sent["count"] += 1
+
+        monkeypatch.setattr("network.client.RADIO_ENABLED", False)
+        monkeypatch.setattr(client, "_send_command", fake_send_command)
+
+        client.send_say(time=1, data=b"hello")
+
+        assert sent["count"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Реальный режим: ошибки без соединения

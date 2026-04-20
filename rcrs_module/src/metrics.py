@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import csv
+import json
 import logging
+import os
 import statistics
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -78,9 +81,14 @@ class MetricsCollector:
         self,
         enabled: bool = True,
         budget_ms: float = 100.0,
+        tick_csv_path: Optional[Path] = None,
+        events_csv_path: Optional[Path] = None,
+        summary_json_path: Optional[Path] = None,
+        budget_total_ms: float = 1000.0,
     ) -> None:
         self.enabled = enabled
         self.budget_ms = budget_ms
+        self.budget_total_ms = budget_total_ms
 
         # Времена фаз текущего такта (мс). Ключи совпадают с _PHASES.
         self._current_tick_phases: dict[str, float] = {}
@@ -98,6 +106,25 @@ class MetricsCollector:
         self._counters_total: dict[str, int] = {c: 0 for c in _COUNTERS}
         self._current_gauges: dict[str, int] = {}
 
+        # Расширенные per-tick поля (воронка задач, таргет, разложение utility,
+        # ресурсы, флаги событий). Заполняются извне через set_* методы,
+        # сбрасываются в start_tick, пишутся одной строкой в stop_tick.
+        self._tick_fields: dict[str, Any] = {}
+
+        # CSV/JSON writers. Ленивая инициализация — не создаю файл, пока не
+        # захлопнется первый stop_tick, чтобы пустых файлов не оставалось.
+        self._tick_csv_path = tick_csv_path
+        self._events_csv_path = events_csv_path
+        self._summary_json_path = summary_json_path
+        self._tick_csv_file: Optional[object] = None
+        self._tick_csv_writer: Optional[csv.DictWriter] = None
+        self._events_csv_file: Optional[object] = None
+        self._events_csv_writer: Optional[csv.DictWriter] = None
+        self._freeze_count: int = 0
+        self._comm_bytes_coord: int = 0
+        self._comm_bytes_sensor: int = 0
+        self._session_t0 = time.perf_counter()
+
     # --- фазы -----------------------------------------------------------
 
     def start_tick(self) -> None:
@@ -106,6 +133,7 @@ class MetricsCollector:
         self._current_tick_phases = {}
         self._current_counters = {c: 0 for c in _COUNTERS}
         self._current_gauges = {}
+        self._tick_fields = {}
         self._current_tick_start = time.perf_counter()
 
     def stop_tick(self, tick_number: int) -> None:
@@ -127,6 +155,24 @@ class MetricsCollector:
             "gauges": dict(self._current_gauges),
         }
         self._records.append(rec)
+
+        # Freeze = превышение 1000 мс по полному такту. Считаю всегда, даже
+        # если events-CSV отключён, — нужно для summary.json / freeze_rate.
+        if total_ms > self.budget_total_ms:
+            self._freeze_count += 1
+            self.record_event(
+                "freeze",
+                tick=tick_number,
+                agent_id=self._tick_fields.get("agent_id", -1),
+                t_total_ms=round(total_ms, 3),
+            )
+
+        # Запись per-tick CSV (уровень 1 детализированных замеров).
+        if self._tick_csv_path is not None:
+            try:
+                self._write_tick_row(tick_number, total_ms)
+            except (OSError, ValueError) as exc:
+                logger.warning("Metrics: запись tick-CSV не выполнена — %s", exc)
 
     @contextmanager
     def phase(self, name: str) -> Iterator[None]:
@@ -171,6 +217,167 @@ class MetricsCollector:
         if not self._records:
             return 0.0
         return float(self._records[-1]["phases"].get("tick", 0.0))
+
+    # --- расширенные per-tick поля (уровень 1 детализированных метрик) ---
+
+    def set_tick_field(self, name: str, value: Any) -> None:
+        if not self.enabled:
+            return
+        self._tick_fields[name] = value
+
+    def set_tick_fields(self, **fields: Any) -> None:
+        if not self.enabled:
+            return
+        self._tick_fields.update(fields)
+
+    # --- события (уровень 2) --------------------------------------------
+
+    def record_event(self, kind: str, **fields: Any) -> None:
+        if not self.enabled or self._events_csv_path is None:
+            # Freeze-события я считаю и без CSV — через _freeze_count.
+            return
+        try:
+            if self._events_csv_writer is None:
+                header = ["event_type", "tick", "agent_id"] + [
+                    k for k in fields.keys() if k not in ("tick", "agent_id")
+                ]
+                self._events_csv_file = open(
+                    self._events_csv_path, "a", newline="", encoding="utf-8",
+                )
+                self._events_csv_writer = csv.DictWriter(
+                    self._events_csv_file, fieldnames=header, extrasaction="ignore",
+                )
+                if self._events_csv_path.stat().st_size == 0:
+                    self._events_csv_writer.writeheader()
+            row: dict[str, Any] = {"event_type": kind}
+            row.update(fields)
+            self._events_csv_writer.writerow(row)
+            assert self._events_csv_file is not None
+            self._events_csv_file.flush()  # type: ignore[attr-defined]
+        except (OSError, ValueError) as exc:
+            logger.warning("Metrics: запись события не выполнена [kind=%s]: %s", kind, exc)
+
+    def record_communication(self, tick: int, agent_id: int, payload_bytes: int,
+                             kind: str = "coord", channel: str = "say") -> None:
+        if not self.enabled:
+            return
+        if kind == "coord":
+            self._comm_bytes_coord += int(payload_bytes)
+        else:
+            self._comm_bytes_sensor += int(payload_bytes)
+        self.record_event(
+            "communication",
+            tick=tick, agent_id=agent_id,
+            bytes=int(payload_bytes), type=kind, channel=channel,
+        )
+
+    # --- запись строки per-tick CSV -------------------------------------
+
+    _TICK_CSV_FIELDS: tuple[str, ...] = (
+        "tick_id", "agent_id", "agent_type", "agent_status",
+        "pos_entity_id", "pos_x", "pos_y",
+        "t_perception_us", "t_dijkstra_us", "t_pre_filter_us",
+        "t_utility_us", "t_selection_us", "t_dispatch_us", "t_total_us",
+        "n_visible", "n_type_relevant", "n_pre_filter_pass",
+        "n_ttl_filtered", "n_fieryness_filtered", "n_already_rescued_filtered",
+        "target_id", "target_id_prev", "target_changed",
+        "target_utility", "target_distance",
+        "U_total", "f_urgency", "f_dist", "f_effort", "f_social",
+        "w_c", "w_d", "w_e", "w_n",
+        "water_level", "is_transporting", "hp",
+        "is_stuck", "is_idle", "action_dispatched",
+    )
+
+    def _write_tick_row(self, tick_number: int, total_ms: float) -> None:
+        assert self._tick_csv_path is not None
+        if self._tick_csv_writer is None:
+            self._tick_csv_file = open(
+                self._tick_csv_path, "a", newline="", encoding="utf-8",
+            )
+            self._tick_csv_writer = csv.DictWriter(
+                self._tick_csv_file, fieldnames=list(self._TICK_CSV_FIELDS),
+                extrasaction="ignore",
+            )
+            if self._tick_csv_path.stat().st_size == 0:
+                self._tick_csv_writer.writeheader()
+
+        phases = self._current_tick_phases
+        ms_to_us = lambda v: int(round(v * 1000.0))
+        row: dict[str, Any] = {f: "" for f in self._TICK_CSV_FIELDS}
+        row.update(self._tick_fields)
+        row["tick_id"] = tick_number
+        row["t_perception_us"] = ms_to_us(phases.get("perception", 0.0))
+        row["t_dijkstra_us"]   = ms_to_us(phases.get("dijkstra", 0.0))
+        row["t_pre_filter_us"] = ms_to_us(phases.get("pre_filter", 0.0))
+        row["t_utility_us"]    = ms_to_us(phases.get("utility", 0.0))
+        row["t_selection_us"]  = ms_to_us(phases.get("selection", 0.0))
+        row["t_dispatch_us"]   = ms_to_us(phases.get("dispatch", 0.0))
+        row["t_total_us"]      = ms_to_us(total_ms)
+        self._tick_csv_writer.writerow(row)
+        assert self._tick_csv_file is not None
+        self._tick_csv_file.flush()  # type: ignore[attr-defined]
+
+    # --- финальный summary (уровень 4) ----------------------------------
+
+    def write_summary_json(self, agent_id: int, agent_type_name: str) -> None:
+        if not self.enabled or self._summary_json_path is None:
+            return
+        n = len(self._records)
+        if n == 0:
+            return
+
+        total_series = [float(r["phases"].get("tick", 0.0)) for r in self._records]
+        util_series = [float(r["phases"].get("utility", 0.0)) for r in self._records]
+        over_budget = sum(1 for v in util_series if v > self.budget_ms)
+
+        summary: dict[str, Any] = {
+            "agent_id": agent_id,
+            "agent_type": agent_type_name,
+            "pid": os.getpid(),
+            "total_ticks": n,
+            "first_tick": int(self._records[0]["tick"]),
+            "last_tick": int(self._records[-1]["tick"]),
+            "session_wall_seconds": round(time.perf_counter() - self._session_t0, 3),
+            "tick_ms": {
+                "mean": round(statistics.fmean(total_series), 3),
+                "p50": round(_percentile(total_series, 50), 3),
+                "p95": round(_percentile(total_series, 95), 3),
+                "p99": round(_percentile(total_series, 99), 3),
+                "max": round(max(total_series), 3),
+            },
+            "utility_ms": {
+                "mean": round(statistics.fmean(util_series), 3),
+                "p95": round(_percentile(util_series, 95), 3),
+                "over_budget": over_budget,
+                "budget_ms": self.budget_ms,
+            },
+            "freeze_count": self._freeze_count,
+            "freeze_rate": round(self._freeze_count / n, 6),
+            "counters": dict(self._counters_total),
+            "coord_bytes_total": self._comm_bytes_coord,
+            "sensor_bytes_total": self._comm_bytes_sensor,
+            "ablation_config": {
+                "w_c": self._tick_fields.get("w_c"),
+                "w_d": self._tick_fields.get("w_d"),
+                "w_e": self._tick_fields.get("w_e"),
+                "w_n": self._tick_fields.get("w_n"),
+            },
+        }
+        try:
+            self._summary_json_path.write_text(
+                json.dumps(summary, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning("Metrics: запись summary.json не выполнена — %s", exc)
+
+    def close(self) -> None:
+        for f in (self._tick_csv_file, self._events_csv_file):
+            if f is not None:
+                try:
+                    f.close()  # type: ignore[attr-defined]
+                except OSError:
+                    pass
 
     # --- отчёт ------------------------------------------------------------
 
@@ -309,7 +516,7 @@ class MetricsCollector:
         try:
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         except OSError as exc:
-            logger.warning("Я не смог записать %s: %s", path, exc)
+            logger.warning("Metrics: запись отчёта по пути %s не выполнена — %s", path, exc)
 
 
 # Synонимы команд → имена счётчиков, чтобы call-site мог писать

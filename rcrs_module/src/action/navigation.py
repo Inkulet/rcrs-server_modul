@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import random
+from collections import OrderedDict
 
 import networkx as nx
 
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 EXPLORATION_FAR_QUANTILE: float = 0.3
 
 EXPLORATION_MIN_DISTANCE: float = 30_000.0
+
+_PATH_CACHE_MAX_SIZE: int = 4096
+_PATH_CACHE: OrderedDict[tuple[object, int, int, int], tuple[int, ...]] = OrderedDict()
 
 
 def find_nearest_node(graph: nx.Graph, x: int, y: int) -> int | None:
@@ -40,16 +44,55 @@ def compute_path(
     if from_id == to_id:
         return [from_id]
 
+    cache_token = graph.graph.setdefault("_path_cache_token", object())
+    revision = int(graph.graph.get("revision", 0))
+    cache_key = (cache_token, revision, from_id, to_id)
+    cached = _PATH_CACHE.get(cache_key)
+    if cached is not None:
+        _PATH_CACHE.move_to_end(cache_key)
+        return list(cached)
+
+    reverse_key = (cache_token, revision, to_id, from_id)
+    reverse_cached = _PATH_CACHE.get(reverse_key)
+    if reverse_cached is not None:
+        _PATH_CACHE.move_to_end(reverse_key)
+        return list(reversed(reverse_cached))
+
+    def heuristic(node_id: int, goal_id: int) -> float:
+        node_attrs = graph.nodes.get(node_id, {})
+        goal_attrs = graph.nodes.get(goal_id, {})
+        nx_val = node_attrs.get("x")
+        ny_val = node_attrs.get("y")
+        gx_val = goal_attrs.get("x")
+        gy_val = goal_attrs.get("y")
+        if nx_val is None or ny_val is None or gx_val is None or gy_val is None:
+            return 0.0
+        return math.hypot(float(nx_val) - float(gx_val), float(ny_val) - float(gy_val))
+
     try:
-        path: list[int] = nx.astar_path(graph, from_id, to_id, weight="weight")
-        logger.debug("Я нашёл путь от %d до %d: %d шагов", from_id, to_id, len(path))
+        path: list[int] = nx.astar_path(
+            graph, from_id, to_id, heuristic=heuristic, weight="weight",
+        )
+        _remember_path(cache_key, path)
+        logger.debug("Navigation: путь построен [from_id=%d, to_id=%d, steps=%d]", from_id, to_id, len(path))
         return path
     except nx.NetworkXNoPath:
-        logger.warning("Я не нашёл пути от %d до %d — граф несвязный", from_id, to_id)
+        _remember_path(cache_key, [])
+        logger.warning("Navigation: путь не найден (несвязный граф) [from_id=%d, to_id=%d]", from_id, to_id)
         return []
     except nx.NodeNotFound as exc:
-        logger.warning("Я не нашёл узел в графе: %s", exc)
+        logger.warning("Navigation: узел отсутствует в графе (A*) — %s", exc)
         return []
+
+
+def _remember_path(
+    cache_key: tuple[object, int, int, int],
+    path: list[int],
+) -> None:
+    _PATH_CACHE[cache_key] = tuple(path)
+    _PATH_CACHE.move_to_end(cache_key)
+    while len(_PATH_CACHE) > _PATH_CACHE_MAX_SIZE:
+        _PATH_CACHE.popitem(last=False)
 
 
 def compute_path_distance(
@@ -65,12 +108,12 @@ def compute_path_distance(
         return distance
     except nx.NetworkXNoPath:
         logger.warning(
-            "Я не нашёл пути от %d до %d, возвращаю MAX_MAP_DISTANCE=%.0f",
+            "Navigation: дистанция по графу не вычислена, возвращается MAX_MAP_DISTANCE [from_id=%d, to_id=%d, max=%.0f]",
             from_id, to_id, MAX_MAP_DISTANCE,
         )
         return MAX_MAP_DISTANCE
     except nx.NodeNotFound as exc:
-        logger.warning("Я не нашёл узел при расчёте дистанции: %s", exc)
+        logger.warning("Navigation: узел отсутствует в графе (Dijkstra) — %s", exc)
         return MAX_MAP_DISTANCE
 
 
@@ -86,7 +129,7 @@ def fill_path_distances(
         )
     except nx.NodeNotFound:
         logger.warning(
-            "Я не нашёл позицию агента %d в графе, все дистанции = MAX", agent_node_id
+            "Navigation: позиция агента отсутствует в графе, все дистанции = MAX [agent_node_id=%d]", agent_node_id
         )
         dist_map = {}
 
@@ -109,7 +152,7 @@ def fill_path_distances(
                 if entity.id in blk_set and node_id in dist_map:
                     nav_id = node_id
                     logger.debug(
-                        "Я привязал завал entity_id=%d к узлу %d через blockades_by_node",
+                        "Navigation: завал привязан к узлу через blockades_by_node [entity_id=%d, node_id=%d]",
                         entity.id, node_id,
                     )
                     break
@@ -118,8 +161,8 @@ def fill_path_distances(
 
         if distance >= MAX_MAP_DISTANCE:
             logger.warning(
-                "Я не смог привязать entity_id=%d к графу: "
-                "pos_on_edge=%s, entity_xy=(%s,%s), nav_id=%d → distance=MAX",
+                "Navigation: сущность не привязана к графу, дистанция=MAX "
+                "[entity_id=%d, pos_on_edge=%s, entity_xy=(%s,%s), nav_id=%d]",
                 entity.id,
                 entity.raw_sensor_data.position_on_edge,
                 entity.entity_x, entity.entity_y,
@@ -128,7 +171,7 @@ def fill_path_distances(
 
         entity.computed_metrics.path_distance = distance
         logger.debug(
-            "Я обновил path_distance для entity_id=%d (nav_id=%d): %.1f мм",
+            "Navigation: path_distance обновлён [entity_id=%d, nav_id=%d, distance_mm=%.1f]",
             entity.id, nav_id, distance,
         )
     return entities
@@ -140,7 +183,7 @@ def nearest_refuge_path(
     refuge_ids: list[int],
 ) -> list[int]:
     if not refuge_ids:
-        logger.warning("Я не знаю ни одного убежища — невозможно построить маршрут")
+        logger.warning("Navigation: список убежищ пуст — маршрут не построен")
         return []
 
     best_path: list[int] = []
@@ -160,11 +203,11 @@ def nearest_refuge_path(
 
     if best_path:
         logger.info(
-            "Я выбрал ближайшее убежище refuge_id=%d: дистанция=%.1f мм",
+            "Navigation: выбрано ближайшее убежище [refuge_id=%d, distance_mm=%.1f]",
             best_path[-1], best_distance,
         )
     else:
-        logger.error("Я не смог найти путь ни к одному убежищу из node=%d", from_id)
+        logger.error("Navigation: ни одно убежище недостижимо по графу [from_id=%d]", from_id)
 
     return best_path
 
@@ -196,18 +239,96 @@ def choose_refuge_with_exit(
         exit_path = compute_path(graph, refuge_id, next_target_node)
         if exit_path:
             logger.info(
-                "Я выбрал refuge_id=%d с проверкой exit→node=%d, "
-                "дистанция=%.1f мм", refuge_id, next_target_node, dist,
+                "Navigation: убежище выбрано с проверкой выхода к следующей цели "
+                "[refuge_id=%d, exit_node=%d, distance_mm=%.1f]", refuge_id, next_target_node, dist,
             )
             return path
 
     if scored:
         logger.info(
-            "Я не нашёл refuge с exit→node=%d, fallback на ближайший",
+            "Navigation: убежище с выходом к следующей цели не найдено, fallback на ближайшее [next_target_node=%d]",
             next_target_node,
         )
         return scored[0][2]
     return []
+
+
+def pick_search_target(
+    graph: nx.Graph,
+    start_node: int,
+    visited: set[int] | None = None,
+    partition_index: int | None = None,
+    partition_count: int | None = None,
+    excluded: set[int] | None = None,
+) -> int | None:
+    if not graph.has_node(start_node):
+        logger.warning("Navigation: start_node отсутствует в графе для search target [start_node=%d]", start_node)
+        return None
+
+    try:
+        dist_map: dict[int, float] = nx.single_source_dijkstra_path_length(
+            graph, start_node, weight="weight"
+        )
+    except nx.NodeNotFound:
+        logger.warning(
+            "Navigation: start_node не найден при Dijkstra-расчёте дистанций для search target [start_node=%d]",
+            start_node,
+        )
+        return None
+
+    candidates: list[int] = [
+        node_id
+        for node_id, attrs in graph.nodes(data=True)
+        if attrs.get("area_type") == "BUILDING" and node_id in dist_map
+    ]
+    if not candidates:
+        logger.debug("Navigation: BUILDING-узлы для search target отсутствуют")
+        return None
+
+    if visited is not None:
+        unvisited = [node_id for node_id in candidates if node_id not in visited]
+        if unvisited:
+            candidates = unvisited
+
+    if excluded:
+        filtered = [node_id for node_id in candidates if node_id not in excluded]
+        if filtered:
+            candidates = filtered
+
+    if (
+        partition_index is not None
+        and partition_count is not None
+        and partition_count > 1
+        and 0 <= partition_index < partition_count
+    ):
+        partitioned = [
+            node_id
+            for idx, node_id in enumerate(sorted(candidates))
+            if idx % partition_count == partition_index
+        ]
+        if partitioned:
+            candidates = partitioned
+        else:
+            logger.debug(
+                "Navigation: BUILDING-целей в секторе поиска нет, fallback на глобальный набор "
+                "[sector=%d/%d]",
+                partition_index, partition_count,
+            )
+
+    best_target: int | None = None
+    best_distance: float = float("inf")
+    for node_id in candidates:
+        distance = dist_map[node_id]
+        if distance < best_distance:
+            best_distance = distance
+            best_target = node_id
+
+    if best_target is not None:
+        logger.debug(
+            "Navigation: search target выбран [target_node=%d, distance=%.0f, candidates=%d]",
+            best_target, best_distance, len(candidates),
+        )
+    return best_target
 
 
 def random_walk(
@@ -217,7 +338,7 @@ def random_walk(
     visited: set[int] | None = None,
 ) -> list[int]:
     if not graph.has_node(start_node):
-        logger.warning("Я не нашёл start_node=%d в графе для random walk", start_node)
+        logger.warning("Navigation: start_node отсутствует в графе для random walk [start_node=%d]", start_node)
         return [start_node]
 
     if visited is not None:
@@ -243,7 +364,7 @@ def random_walk(
             visited.add(next_node)
 
     logger.debug(
-        "Я построил random walk: start=%d, длина=%d узлов, visited=%d",
+        "Navigation: random walk построен [start_node=%d, path_len=%d, visited=%d]",
         start_node, len(path), len(visited) if visited is not None else 0,
     )
     return path
@@ -258,7 +379,7 @@ def pick_exploration_target(
     rng: random.Random | None = None,
 ) -> int | None:
     if not graph.has_node(start_node):
-        logger.warning("Я не нашёл start_node=%d в графе для exploration target", start_node)
+        logger.warning("Navigation: start_node отсутствует в графе для exploration target [start_node=%d]", start_node)
         return None
 
     try:
@@ -266,12 +387,12 @@ def pick_exploration_target(
             graph, start_node, weight="weight"
         )
     except nx.NodeNotFound:
-        logger.warning("Я не нашёл start_node=%d при расчёте дистанций для exploration", start_node)
+        logger.warning("Navigation: start_node не найден при Dijkstra-расчёте дистанций для exploration [start_node=%d]", start_node)
         return None
 
     reachable = [(node, d) for node, d in dist_map.items() if node != start_node]
     if not reachable:
-        logger.debug("Я не нашёл достижимых узлов из start_node=%d", start_node)
+        logger.debug("Navigation: достижимых узлов для exploration нет [start_node=%d]", start_node)
         return None
 
     far_candidates = [item for item in reachable if item[1] >= min_distance]
@@ -291,7 +412,7 @@ def pick_exploration_target(
     rnd = rng if rng is not None else random
     chosen, chosen_dist = rnd.choice(pool)
     logger.debug(
-        "Я выбрал exploration target=%d (dist=%.0f, pool=%d, unvisited=%d)",
+        "Navigation: exploration target выбран [target_node=%d, distance=%.0f, pool=%d, unvisited=%d]",
         chosen, chosen_dist, len(pool), len(unvisited),
     )
     return chosen
@@ -318,6 +439,7 @@ __all__ = [
     "fill_path_distances",
     "nearest_refuge_path",
     "choose_refuge_with_exit",
+    "pick_search_target",
     "random_walk",
     "pick_exploration_target",
     "plan_exploration_path",

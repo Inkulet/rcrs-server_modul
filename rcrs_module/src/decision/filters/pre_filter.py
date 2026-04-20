@@ -24,9 +24,9 @@ class NeedRefugeException(RuntimeError):
 class PreFilterDispatcher:
     def __init__(self, work_rate: float = 1.0, average_speed: float = 70_000.0) -> None:
         if work_rate <= 0:
-            raise ValueError("Я ожидаю положительный work_rate для расчета дедлайнов")
+            raise ValueError("PreFilterDispatcher: требуется положительный work_rate для расчёта дедлайнов")
         if average_speed <= 0:
-            raise ValueError("Я ожидаю положительный average_speed для конвертации дистанции")
+            raise ValueError("PreFilterDispatcher: требуется положительный average_speed для конвертации дистанции в время")
         self.work_rate = work_rate
         self.average_speed = average_speed
 
@@ -47,7 +47,7 @@ class PreFilterDispatcher:
         try:
             if agent_state.resources.is_transporting:
                 logger.debug(
-                    "Я пропускаю фильтрацию, потому что агент занят: agent_id=%s",
+                    "Pre-filter: агент транспортирует гражданского, фильтрация пропущена [agent_id=%s]",
                     agent_state.id,
                 )
                 return []
@@ -60,16 +60,16 @@ class PreFilterDispatcher:
                 tasks = [e for e in tasks if e.type != EntityType.BUILDING]
                 if not tasks:
                     logger.debug(
-                        "Я направляю пожарного в убежище: воды нет и откапывать некого, agent_id=%s",
+                        "Pre-filter: FIRE_BRIGADE без воды и без задач на спасение — требуется убежище [agent_id=%s]",
                         agent_state.id,
                     )
-                    raise NeedRefugeException("Я обнаружил, что у пожарного нет воды и задач на спасение")
+                    raise NeedRefugeException("FIRE_BRIGADE: отсутствует вода и нет задач на спасение — требуется возврат в убежище")
             logger.debug(
-                "Я отфильтровал сущности по типам %s: было=%d, осталось=%d, agent_id=%s",
+                "Pre-filter: отсев по типам завершён [agent_id=%s, allowed_types=%s, before=%d, after=%d]",
+                agent_state.id,
                 ",".join(t.value for t in sorted(allowed_types, key=lambda t: t.value)),
                 len(tasks_list),
                 len(tasks),
-                agent_state.id,
             )
 
             has_live_fire_brigades = self._has_live_fire_brigades(world_model)
@@ -87,16 +87,16 @@ class PreFilterDispatcher:
                         filtered.append(entity)
                 except ValueError as exc:
                     logger.error(
-                        "Я получил некорректные данные для entity_id=%s: %s",
+                        "Pre-filter: некорректные данные сущности [entity_id=%s]: %s",
                         entity.id,
                         exc,
                     )
 
             if not filtered and tasks:
                 logger.info(
-                    "ДИАГ_ФИЛЬТР: %d задач → 0 после фильтра, agent_id=%s, типы: %s",
-                    len(tasks),
+                    "Pre-filter: все кандидаты отсеяны [agent_id=%s, candidates_in=%d, sample=%s]",
                     agent_state.id,
+                    len(tasks),
                     ", ".join(
                         f"{e.id}(f={e.raw_sensor_data.fieryness},hp={e.raw_sensor_data.hp},"
                         f"d={e.raw_sensor_data.damage},b={e.raw_sensor_data.buriedness},"
@@ -107,7 +107,7 @@ class PreFilterDispatcher:
 
             return filtered
         except ValueError as exc:
-            logger.error("Я получил некорректные входные данные фильтра: %s", exc)
+            logger.error("Pre-filter: некорректные входные данные — %s", exc)
             return []
 
     @staticmethod
@@ -141,19 +141,19 @@ class PreFilterDispatcher:
 
         if entity.type == EntityType.CIVILIAN:
             if hp is not None and hp == 0:
-                logger.debug("Я исключаю погибшего гражданского: entity_id=%s", entity.id)
+                logger.debug("Pre-filter: гражданский погиб (hp=0), исключён [entity_id=%s]", entity.id)
                 return False
 
             if damage == 0 and buriedness == 0:
                 logger.debug(
-                    "Я исключаю здорового гражданского без завала: entity_id=%s",
+                    "Pre-filter: гражданский здоров и не завален, исключён [entity_id=%s]",
                     entity.id,
                 )
                 return False
 
             if pos_edge is not None and pos_edge in refuge_set:
                 logger.debug(
-                    "Я исключаю гражданского в убежище: entity_id=%s, pos=%s",
+                    "Pre-filter: гражданский уже в убежище, исключён [entity_id=%s, pos_edge=%s]",
                     entity.id, pos_edge,
                 )
                 return False
@@ -164,27 +164,14 @@ class PreFilterDispatcher:
                 if buriedness is None or buriedness <= 0:
                     return False
 
-            if agent_type == AgentType.AMBULANCE_TEAM:
-                if (
-                    buriedness is not None
-                    and buriedness > 0
-                    and has_live_fire_brigades
-                ):
-                    logger.debug(
-                        "Я исключаю заваленного из задач амбуланса "
-                        "(это для пожарных): entity_id=%s, buriedness=%s",
-                        entity.id, buriedness,
-                    )
-                    return False
-
         if entity.type == EntityType.HUMAN:
             if hp is not None and hp == 0:
-                logger.debug("Я исключаю погибшего агента: entity_id=%s", entity.id)
+                logger.debug("Pre-filter: агент-спасатель погиб (hp=0), исключён [entity_id=%s]", entity.id)
                 return False
 
             if buriedness is None or buriedness == 0:
                 logger.debug(
-                    "Я исключаю незаваленного агента: entity_id=%s, buriedness=%s",
+                    "Pre-filter: агент-спасатель не завален, исключён [entity_id=%s, buriedness=%s]",
                     entity.id,
                     buriedness,
                 )
@@ -197,15 +184,12 @@ class PreFilterDispatcher:
                 if damage is None or damage <= 0:
                     return False
 
-            if agent_type == AgentType.AMBULANCE_TEAM and has_live_fire_brigades:
-                return False
-
         if entity.type == EntityType.BUILDING:
             fieryness = entity.raw_sensor_data.fieryness
             if fieryness is not None and fieryness not in {1, 2, 3}:
                 logger.debug(
-                    "Я исключаю неактивное здание: fieryness=%s, entity_id=%s",
-                    fieryness, entity.id,
+                    "Pre-filter: здание не горит, исключено [entity_id=%s, fieryness=%s]",
+                    entity.id, fieryness,
                 )
                 return False
 
@@ -213,44 +197,19 @@ class PreFilterDispatcher:
             repair_cost = entity.raw_sensor_data.repair_cost
             if repair_cost == 0:
                 logger.debug(
-                    "Я исключаю завал: repair_cost=0 (расчищено): entity_id=%s",
+                    "Pre-filter: завал уже расчищен (repair_cost=0), исключён [entity_id=%s]",
                     entity.id,
                 )
                 return False
 
         if entity.computed_metrics.path_distance >= UNREACHABLE_DISTANCE_THRESHOLD:
             logger.info(
-                "Я исключаю недостижимую цель entity_id=%s: path_distance=%.0f ≥ %.0f (нет прохода)",
+                "Pre-filter: цель недостижима по графу, исключена [entity_id=%s, path_distance=%.0f, threshold=%.0f]",
                 entity.id,
                 entity.computed_metrics.path_distance,
                 UNREACHABLE_DISTANCE_THRESHOLD,
             )
             return False
-
-        if entity.raw_sensor_data.buriedness is not None:
-            if self.work_rate <= 0:
-                raise ValueError("Я получил неположительную скорость работ")
-
-            try:
-                t_travel = entity.computed_metrics.path_distance / self.average_speed
-            except ZeroDivisionError:
-                t_travel = 0.0
-
-            time_to_action = t_travel + (
-                entity.raw_sensor_data.buriedness / self.work_rate
-            )
-            if entity.computed_metrics.estimated_death_time < (
-                time_to_action + ESTIMATED_TRIP_TO_REFUGE
-            ):
-                logger.debug(
-                    "Я исключаю обреченного (не довезет живым): entity_id=%s, "
-                    "estimated_death=%d, time_to_action=%.1f, trip_to_refuge=%.1f",
-                    entity.id,
-                    entity.computed_metrics.estimated_death_time,
-                    time_to_action,
-                    ESTIMATED_TRIP_TO_REFUGE,
-                )
-                return False
 
         return True
 

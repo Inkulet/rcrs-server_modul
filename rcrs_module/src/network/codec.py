@@ -5,6 +5,7 @@ import logging
 import struct
 from typing import Any, List, Optional
 
+from config import RADIO_ENABLED
 from network.proto.RCRSProto_pb2 import (
     ChangeSetProto,
     IntListProto,
@@ -110,6 +111,22 @@ COMP_WATER    = _STD_CMP | 4  # 0x1404
 COMP_PATH     = _STD_CMP | 5  # 0x1405
 COMP_MESSAGE  = _STD_CMP | 6  # 0x1406  Message — содержимое AKSay/AKSpeak (rawData)
 
+SAY_KIND_TARGET_CLAIM = 1
+SAY_KIND_BURIED_HELP = 2
+SAY_KIND_BLOCKADE_REPORT = 3
+SAY_KIND_SEARCH_CLAIM = 4
+
+SAY_ROLE_UNKNOWN = 0
+SAY_ROLE_FIRE_BRIGADE = 1
+SAY_ROLE_AMBULANCE_TEAM = 2
+SAY_ROLE_POLICE_FORCE = 3
+
+AGENT_TYPE_TO_SAY_ROLE: dict[AgentType, int] = {
+    AgentType.FIRE_BRIGADE: SAY_ROLE_FIRE_BRIGADE,
+    AgentType.AMBULANCE_TEAM: SAY_ROLE_AMBULANCE_TEAM,
+    AgentType.POLICE_FORCE: SAY_ROLE_POLICE_FORCE,
+}
+
 _ENTITY_URN_TO_AGENT_TYPE: dict[int, AgentType] = {
     ENT_FIRE_BRIGADE:    AgentType.FIRE_BRIGADE,
     ENT_AMBULANCE_TEAM:  AgentType.AMBULANCE_TEAM,
@@ -165,7 +182,7 @@ def build_ak_connect(
     msg.components[COMP_ENTITY_TYPES].intList.CopyFrom(int_list)
 
     logger.debug(
-        "Я собрал AKConnect: request_id=%d, name=%s, types=%s",
+        "Codec: собран AKConnect [request_id=%d, name=%s, entity_types=%s]",
         request_id, agent_name, entity_types,
     )
     return pack_frame(msg.SerializeToString())
@@ -196,7 +213,7 @@ def build_ak_move(
     msg.components[COMP_DEST_X].intValue = dest_x
     msg.components[COMP_DEST_Y].intValue = dest_y
 
-    logger.debug("Я собрал AKMove: agent=%d, time=%d, path=%s", agent_id, time, path)
+    logger.debug("Codec: собран AKMove [agent_id=%d, time=%d, path=%s]", agent_id, time, path)
     return pack_frame(msg.SerializeToString())
 
 
@@ -206,7 +223,7 @@ def build_ak_rescue(agent_id: int, time: int, target_id: int) -> bytes:
     msg.components[COMP_AGENT_ID].entityID = agent_id
     msg.components[COMP_TIME].intValue     = time
     msg.components[COMP_TARGET].entityID   = target_id
-    logger.debug("Я собрал AKRescue: agent=%d, time=%d, target=%d", agent_id, time, target_id)
+    logger.debug("Codec: собран AKRescue [agent_id=%d, time=%d, target_id=%d]", agent_id, time, target_id)
     return pack_frame(msg.SerializeToString())
 
 
@@ -223,7 +240,7 @@ def build_ak_extinguish(
     msg.components[COMP_TARGET].entityID   = target_id
     msg.components[COMP_WATER].intValue    = water
     logger.debug(
-        "Я собрал AKExtinguish: agent=%d, time=%d, target=%d, water=%d",
+        "Codec: собран AKExtinguish [agent_id=%d, time=%d, target_id=%d, water=%d]",
         agent_id, time, target_id, water,
     )
     return pack_frame(msg.SerializeToString())
@@ -235,7 +252,7 @@ def build_ak_clear(agent_id: int, time: int, target_id: int) -> bytes:
     msg.components[COMP_AGENT_ID].entityID = agent_id
     msg.components[COMP_TIME].intValue     = time
     msg.components[COMP_TARGET].entityID   = target_id
-    logger.debug("Я собрал AKClear: agent=%d, time=%d, target=%d", agent_id, time, target_id)
+    logger.debug("Codec: собран AKClear [agent_id=%d, time=%d, target_id=%d]", agent_id, time, target_id)
     return pack_frame(msg.SerializeToString())
 
 
@@ -247,7 +264,7 @@ def build_ak_clear_area(agent_id: int, time: int, dest_x: int, dest_y: int) -> b
     msg.components[COMP_DEST_X].intValue   = dest_x
     msg.components[COMP_DEST_Y].intValue   = dest_y
     logger.debug(
-        "Я собрал AKClearArea: agent=%d, time=%d, dest=(%d,%d)",
+        "Codec: собран AKClearArea [agent_id=%d, time=%d, dest=(%d,%d)]",
         agent_id, time, dest_x, dest_y,
     )
     return pack_frame(msg.SerializeToString())
@@ -285,6 +302,10 @@ def build_ak_say(agent_id: int, time: int, data: bytes) -> bytes:
     msg.components[COMP_TIME].intValue     = time
     msg.components[COMP_MESSAGE].rawData   = data
     return pack_frame(msg.SerializeToString())
+
+
+def encode_say_payload(kind: int, entity_id: int, role_code: int = SAY_ROLE_UNKNOWN) -> bytes:
+    return struct.pack(">iii", kind, entity_id, role_code)
 
 
 def _get_int(comp: MessageComponentProto) -> int:
@@ -333,13 +354,22 @@ def parse_ka_connect_ok(
                 if PROP_WATER_QUANTITY in props and props[PROP_WATER_QUANTITY].defined:
                     initial_water = props[PROP_WATER_QUANTITY].intValue
                 logger.info(
-                    "Я извлёк начальную позицию агента agent_id=%d: pos=%d, x=%d, y=%d, water=%d",
+                    "Codec: начальная позиция агента извлечена из KAConnectOK [agent_id=%d, pos_id=%d, x=%d, y=%d, water=%d]",
                     agent_id, pos_id, x, y, initial_water,
                 )
 
             if urn in _AREA_URNS:
                 x = props[PROP_X].intValue if PROP_X in props else 0
                 y = props[PROP_Y].intValue if PROP_Y in props else 0
+                area_type = None
+                if urn == ENT_ROAD:
+                    area_type = "ROAD"
+                elif urn == ENT_REFUGE:
+                    area_type = "REFUGE"
+                elif urn == ENT_HYDRANT:
+                    area_type = "HYDRANT"
+                else:
+                    area_type = "BUILDING"
                 area_apexes: Optional[list[int]] = None
                 if PROP_APEXES in props and props[PROP_APEXES].defined:
                     try:
@@ -348,7 +378,15 @@ def parse_ka_connect_ok(
                             area_apexes = apexes_values
                     except (AttributeError, TypeError):
                         pass
-                map_nodes.append(MapNode(entity_id=eid, x=x, y=y, apexes=area_apexes))
+                map_nodes.append(
+                    MapNode(
+                        entity_id=eid,
+                        x=x,
+                        y=y,
+                        area_type=area_type,
+                        apexes=area_apexes,
+                    )
+                )
                 node_coords[eid] = (x, y)
                 _entity_protos_area.append((eid, urn, props))
 
@@ -378,7 +416,7 @@ def parse_ka_connect_ok(
 
 
     logger.info(
-        "Я разобрал KAConnectOK: agent_id=%d, узлов=%d, рёбер=%d, убежищ=%d, start_pos=%d, water=%d",
+        "Codec: KAConnectOK разобран [agent_id=%d, map_nodes=%d, map_edges=%d, refuges=%d, start_pos=%d, water=%d]",
         agent_id, len(map_nodes), len(map_edges), len(refuge_ids), initial_position.entity_id, initial_water,
     )
     return request_id, agent_id, map_nodes, map_edges, refuge_ids, initial_position, initial_water
@@ -504,7 +542,7 @@ def parse_ka_sense(
                 if civilian_pos_id == agent_id:
                     own_transporting = True
                     logger.debug(
-                        "Я обнаружил перевозимого гражданского entity_id=%d на агенте %d",
+                        "Codec: обнаружен перевозимый гражданский [civilian_id=%d, carrier_agent_id=%d]",
                         eid, agent_id,
                     )
 
@@ -548,7 +586,7 @@ def parse_ka_sense(
 
     if not own_found:
         logger.warning(
-            "Я не нашёл собственного состояния агента agent_id=%d в KASense такта %d",
+            "Codec: собственное состояние агента отсутствует в KASense [agent_id=%d, tick=%d]",
             agent_id, tick,
         )
 
@@ -567,20 +605,39 @@ def parse_ka_sense(
         deleted_ids = list(proto.components[COMP_UPDATES].changeSet.deletes)
 
     heard_target_ids: set[int] = set()
-    if COMP_HEARING in proto.components:
+    heard_target_roles: dict[int, int] = {}
+    heard_target_speakers: dict[int, int] = {}
+    heard_search_target_ids: set[int] = set()
+    heard_search_target_roles: dict[int, int] = {}
+    heard_search_target_speakers: dict[int, int] = {}
+    if RADIO_ENABLED and COMP_HEARING in proto.components:
         hearing_comp = proto.components[COMP_HEARING]
         if hearing_comp.HasField("commandList"):
             for cmd in hearing_comp.commandList.commands:
                 if cmd.urn == MSG_AK_SAY and COMP_MESSAGE in cmd.components:
+                    speaker_id = _get_int(cmd.components[COMP_AGENT_ID]) if COMP_AGENT_ID in cmd.components else 0
+                    if speaker_id == agent_id:
+                        continue
                     raw = cmd.components[COMP_MESSAGE].rawData
-                    if len(raw) >= 4:
-                        import struct
+                    if len(raw) >= 12:
+                        kind, target_id, role_code = struct.unpack(">iii", raw[:12])
+                        if kind == SAY_KIND_TARGET_CLAIM and target_id > 0:
+                            heard_target_ids.add(target_id)
+                            heard_target_roles[target_id] = role_code
+                            heard_target_speakers[target_id] = speaker_id
+                        elif kind == SAY_KIND_SEARCH_CLAIM and target_id > 0:
+                            heard_search_target_ids.add(target_id)
+                            heard_search_target_roles[target_id] = role_code
+                            heard_search_target_speakers[target_id] = speaker_id
+                    elif len(raw) >= 4:
                         target_id = struct.unpack(">i", raw[:4])[0]
                         if target_id > 0:
                             heard_target_ids.add(target_id)
+                            heard_target_roles[target_id] = SAY_ROLE_UNKNOWN
+                            heard_target_speakers[target_id] = speaker_id
     if heard_target_ids:
         logger.debug(
-            "Я услышал %d целей от соседних агентов: %s",
+            "Codec: услышаны claim-сообщения от союзников [targets_count=%d, target_ids=%s]",
             len(heard_target_ids), heard_target_ids,
         )
 
@@ -593,12 +650,17 @@ def parse_ka_sense(
         map_edges=[],
         deleted_entity_ids=deleted_ids,
         heard_target_ids=heard_target_ids,
+        heard_target_roles=heard_target_roles,
+        heard_target_speakers=heard_target_speakers,
+        heard_search_target_ids=heard_search_target_ids,
+        heard_search_target_roles=heard_search_target_roles,
+        heard_search_target_speakers=heard_search_target_speakers,
         blockade_to_road=blockade_to_road,
         road_blockades=road_blockades,
     )
 
     logger.debug(
-        "Я разобрал KASense такта %d: сущностей=%d, союзников=%d",
+        "Codec: KASense разобран [tick=%d, visible_entities=%d, allies=%d]",
         tick, len(visible_entities), len(ally_states),
     )
     return packet
@@ -663,6 +725,10 @@ __all__ = [
     "MSG_AK_MOVE", "MSG_AK_RESCUE", "MSG_AK_EXTINGUISH",
     "MSG_AK_CLEAR", "MSG_AK_LOAD", "MSG_AK_UNLOAD", "MSG_AK_REST",
     "MSG_AK_SAY", "COMP_MESSAGE",
+    "SAY_KIND_TARGET_CLAIM", "SAY_KIND_BURIED_HELP", "SAY_KIND_BLOCKADE_REPORT",
+    "SAY_KIND_SEARCH_CLAIM",
+    "SAY_ROLE_UNKNOWN", "SAY_ROLE_FIRE_BRIGADE", "SAY_ROLE_AMBULANCE_TEAM",
+    "SAY_ROLE_POLICE_FORCE", "AGENT_TYPE_TO_SAY_ROLE", "encode_say_payload",
     # Фреймирование
     "pack_frame", "unpack_frame_length",
     # Сборка команд
