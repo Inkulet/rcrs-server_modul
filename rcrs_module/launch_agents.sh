@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== Запуск агентов RCRS на ${HOST}:${PORT} ==="
 
-for i in $(seq 1 30); do
+for i in $(seq 1 46); do
     python3 "${SCRIPT_DIR}/main.py" --agent-type FIRE_BRIGADE --host "$HOST" --port "$PORT" &
 done
 echo "Запущено 30 FIRE_BRIGADE"
@@ -18,10 +18,13 @@ for i in $(seq 1 30); do
 done
 echo "Запущено 30 AMBULANCE_TEAM"
 
-for i in $(seq 1 30); do
+for i in $(seq 1 40); do
     python3 "${SCRIPT_DIR}/main.py" --agent-type POLICE_FORCE --host "$HOST" --port "$PORT" &
 done
 echo "Запущено 30 POLICE_FORCE"
+
+python3 "${SCRIPT_DIR}/main.py" --agent-type FIRE_STATION --host "$HOST" --port "$PORT" &
+echo "Запущен FIRE_STATION"
 
 python3 "${SCRIPT_DIR}/main.py" --agent-type FIRE_STATION --host "$HOST" --port "$PORT" &
 echo "Запущен FIRE_STATION"
@@ -36,3 +39,7 @@ echo "=== Все 93 агента запущены. PID: $(jobs -p | wc -l) пр�
 echo "Для остановки: kill \$(jobs -p) или Ctrl+C"
 
 wait
+
+# Пост-прогонная сводка. Скрипт сам читает agent.cfg; если
+# [run_table] enabled=false — тихо выходит.
+python3 "${SCRIPT_DIR}/tools/finalize_run.py" || true
