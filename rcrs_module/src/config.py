@@ -40,6 +40,14 @@ TICK_CSV_ENABLED: bool = _cfg.getboolean("csv_metrics", "tick_csv_enabled", fall
 EVENTS_CSV_ENABLED: bool = _cfg.getboolean("csv_metrics", "events_csv_enabled", fallback=False)
 SUMMARY_JSON_ENABLED: bool = _cfg.getboolean("csv_metrics", "summary_json_enabled", fallback=False)
 
+# ---------------------------------------------------------------------------
+# Параметры связи
+# ---------------------------------------------------------------------------
+
+# Глобальный тумблер всей радио-связи. Если выключен, агент не отправляет
+# AKSay и игнорирует входящие hearing-сообщения из KASense.
+RADIO_ENABLED: bool = _cfg.getboolean("communication", "radio_enabled", fallback=True)
+
 
 def setup_logging() -> None:
     try:
@@ -207,6 +215,8 @@ __all__ = [
     "TICK_CSV_ENABLED",
     "EVENTS_CSV_ENABLED",
     "SUMMARY_JSON_ENABLED",
+    # Связь
+    "RADIO_ENABLED",
     # Подключение
     "KERNEL_HOST",
     "KERNEL_PORT",

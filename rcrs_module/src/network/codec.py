@@ -5,6 +5,7 @@ import logging
 import struct
 from typing import Any, List, Optional
 
+from config import RADIO_ENABLED
 from network.proto.RCRSProto_pb2 import (
     ChangeSetProto,
     IntListProto,
@@ -609,7 +610,7 @@ def parse_ka_sense(
     heard_search_target_ids: set[int] = set()
     heard_search_target_roles: dict[int, int] = {}
     heard_search_target_speakers: dict[int, int] = {}
-    if COMP_HEARING in proto.components:
+    if RADIO_ENABLED and COMP_HEARING in proto.components:
         hearing_comp = proto.components[COMP_HEARING]
         if hearing_comp.HasField("commandList"):
             for cmd in hearing_comp.commandList.commands:

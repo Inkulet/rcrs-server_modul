@@ -5,6 +5,7 @@ import socket
 import struct
 from typing import List, Optional
 
+from config import RADIO_ENABLED
 from network.codec import (
     ENT_AMBULANCE_CENTRE,
     ENT_AMBULANCE_TEAM,
@@ -278,6 +279,9 @@ class RCRSClient:
         logger.debug("Я отправил AKRest: time=%d", time)
 
     def send_say(self, time: int, data: bytes) -> None:
+        if not RADIO_ENABLED:
+            logger.debug("Радио отключено конфигом: пропускаю AKSay time=%d", time)
+            return
         self._send_command(build_ak_say(self._agent_id, time, data))
         self._inc_metric("ak_say")
         logger.debug("Я отправил AKSay: time=%d, data_len=%d", time, len(data))

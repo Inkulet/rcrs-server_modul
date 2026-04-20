@@ -18,7 +18,7 @@ EXPLORATION_FAR_QUANTILE: float = 0.3
 EXPLORATION_MIN_DISTANCE: float = 30_000.0
 
 _PATH_CACHE_MAX_SIZE: int = 4096
-_PATH_CACHE: OrderedDict[tuple[int, int, int, int], tuple[int, ...]] = OrderedDict()
+_PATH_CACHE: OrderedDict[tuple[object, int, int, int], tuple[int, ...]] = OrderedDict()
 
 
 def find_nearest_node(graph: nx.Graph, x: int, y: int) -> int | None:
@@ -44,15 +44,15 @@ def compute_path(
     if from_id == to_id:
         return [from_id]
 
-    graph_id = id(graph)
+    cache_token = graph.graph.setdefault("_path_cache_token", object())
     revision = int(graph.graph.get("revision", 0))
-    cache_key = (graph_id, revision, from_id, to_id)
+    cache_key = (cache_token, revision, from_id, to_id)
     cached = _PATH_CACHE.get(cache_key)
     if cached is not None:
         _PATH_CACHE.move_to_end(cache_key)
         return list(cached)
 
-    reverse_key = (graph_id, revision, to_id, from_id)
+    reverse_key = (cache_token, revision, to_id, from_id)
     reverse_cached = _PATH_CACHE.get(reverse_key)
     if reverse_cached is not None:
         _PATH_CACHE.move_to_end(reverse_key)
@@ -86,7 +86,7 @@ def compute_path(
 
 
 def _remember_path(
-    cache_key: tuple[int, int, int, int],
+    cache_key: tuple[object, int, int, int],
     path: list[int],
 ) -> None:
     _PATH_CACHE[cache_key] = tuple(path)

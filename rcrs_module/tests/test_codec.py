@@ -501,6 +501,26 @@ class TestParseKaSense:
         assert packet.heard_search_target_roles == {701: SAY_ROLE_AMBULANCE_TEAM}
         assert packet.heard_search_target_speakers == {701: 77}
 
+    def test_radio_disabled_ignores_hearing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("network.codec.RADIO_ENABLED", False)
+        proto = self._make_sense(agent_id=1, tick=3)
+        _append_hearing_say(
+            proto,
+            speaker_id=77,
+            payload=encode_say_payload(
+                SAY_KIND_TARGET_CLAIM, 501, SAY_ROLE_AMBULANCE_TEAM,
+            ),
+        )
+
+        packet = parse_ka_sense(proto, agent_id=1, agent_type=AgentType.FIRE_BRIGADE)
+
+        assert packet.heard_target_ids == set()
+        assert packet.heard_target_roles == {}
+        assert packet.heard_target_speakers == {}
+        assert packet.heard_search_target_ids == set()
+        assert packet.heard_search_target_roles == {}
+        assert packet.heard_search_target_speakers == {}
+
     def test_building_with_fieryness_zero_parses_ok(self) -> None:
         """Я проверяю: fieryness=0 (не горит) не вызывает ValidationError после исправления ge=0."""
         extra = [(200, ENT_BUILDING, [
