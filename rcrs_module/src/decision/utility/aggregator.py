@@ -73,7 +73,7 @@ class UtilityAggregator:
             utility = (
                 self.w_c * f_urgency
                 - self.w_d * f_dist
-                + self.w_e * f_effort
+                - self.w_e * f_effort
                 - self.w_n * f_social
             )
             return utility
