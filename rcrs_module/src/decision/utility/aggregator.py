@@ -9,7 +9,7 @@ from world.entities import AgentState, Position, VisibleEntity
 
 from decision.utility.distance import MAX_MAP_DISTANCE, distance_factor_precomputed
 from decision.utility.effort import compute_effort
-from decision.utility.social import DEFAULT_RADIUS, social_factor
+from decision.utility.social import DEFAULT_RADIUS, SocialFactorCache, social_factor
 from decision.utility.urgency import compute_urgency
 
 
@@ -45,6 +45,7 @@ class UtilityAggregator:
         task_distance: Optional[float] = None,
         social_radius: float = DEFAULT_RADIUS,
         max_map_distance: float = MAX_MAP_DISTANCE,
+        social_cache: Optional[SocialFactorCache] = None,
     ) -> float:
 
         try:
@@ -68,6 +69,7 @@ class UtilityAggregator:
                 agent_state.type,
                 current_agent_id=agent_state.id,
                 radius=social_radius,
+                cache=social_cache,
             )
 
             utility = (

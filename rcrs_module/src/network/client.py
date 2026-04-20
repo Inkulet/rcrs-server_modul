@@ -85,9 +85,9 @@ class RCRSClient:
 
         self._mock_tick: int = 0
 
-        # Опциональный MetricsCollector — подключается из loop.py. Все
-        # send_* методы инкрементят соответствующие счётчики. Если None
-        # (до первого такта или при отключённых метриках) — игнор.
+        # Опциональный MetricsCollector, подключаемый из loop.py.
+        # Методы send_* инкрементят соответствующие счётчики.
+        # При None (до первого такта или при отключённых метриках) — no-op.
         self._metrics: Optional[object] = None
 
     def set_metrics(self, metrics: object) -> None:
@@ -227,10 +227,10 @@ class RCRSClient:
         return packet
 
     def send_move(self, time: int, path: List[int], dest_x: int = -1, dest_y: int = -1) -> None:
-        # Сервер (TrafficSimulator.handleMove) отклоняет путь, если первый
-        # элемент != позиции агента И не соседствует с ней. Логирую голову
-        # пути, позицию агента и длину — чтобы на серверном rejected-лог
-        # Ignoring/Rejecting move можно было сразу сопоставить причину.
+        # TrafficSimulator.handleMove отклоняет путь, если первый элемент
+        # не равен позиции агента и не соседствует с ней. Голова пути,
+        # позиция агента и длина логируются для сопоставления причины
+        # с серверными rejected-логами Ignoring/Rejecting move.
         head = path[:2] if path else []
         agent_pos = self._prev_position.entity_id if self._prev_position else None
         logger.debug(
@@ -406,7 +406,7 @@ class RCRSClient:
             ally_states=[ally],
             map_nodes=map_nodes,
             map_edges=map_edges,
-            # Я передаю refuge_ids только на такте 0 — так же, как ядро RCRS.
+            # refuge_ids передаются только на такте 0 — поведение ядра RCRS.
             refuge_ids=[mock_refuge_id] if tick == 0 else [],
         )
 

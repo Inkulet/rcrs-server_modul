@@ -520,10 +520,10 @@ def parse_ka_sense(
                     ))
                 continue
 
-            # Для дорог извлекаю PROP_BLOCKADES — список завалов на этой
-            # дороге. Строю обратный индекс blockade_id → road_id как
-            # резервный источник position_on_edge (на случай, если
-            # PROP_POSITION для завала не пришёл в ChangeSet).
+            # Для дорог извлекается PROP_BLOCKADES — список завалов на этой
+            # дороге. Строится обратный индекс blockade_id → road_id как
+            # резервный источник position_on_edge на случай, когда
+            # PROP_POSITION для завала не пришёл в ChangeSet.
             if eurn == ENT_ROAD and PROP_BLOCKADES in props and props[PROP_BLOCKADES].defined:
                 try:
                     blk_ids = list(props[PROP_BLOCKADES].intList.values)

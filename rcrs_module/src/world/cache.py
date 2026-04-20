@@ -30,13 +30,13 @@ class WorldModel:
 
         self.refuge_ids: list[int] = []
 
-        # Я храню диагональ карты как нормировочную базу для f_dist.
-        # До получения карты использую консервативный fallback из distance.py;
-        # реальное значение пересчитывается при построении графа по bbox узлов.
+        # Диагональ карты — нормировочная база для f_dist.
+        # До получения карты используется консервативный fallback из distance.py;
+        # фактическое значение пересчитывается при построении графа по bbox узлов.
         self.max_map_distance: float = MAX_MAP_DISTANCE
 
         # Индекс node_id → set of blockade entity_ids.
-        # Обновляется в refresh_blockade_weights, O(1) поиск на пути.
+        # Обновляется в refresh_blockade_weights, обеспечивает O(1) поиск на пути.
         self.blockades_by_node: Dict[int, set[int]] = {}
 
         logger.info("WorldModel: инициализированы пустой кэш и дорожный граф")
@@ -98,9 +98,9 @@ class WorldModel:
             )
             edge_count += 1
 
-        # Я пересчитываю MaxMapDistance как диагональ bounding-box всех узлов графа.
-        # Это даёт корректную нормировку f_dist независимо от размера карты
-        # (Kobe, VC, Berlin — у всех разные размеры в миллиметрах).
+        # MaxMapDistance пересчитывается как диагональ bounding-box всех узлов графа.
+        # Это обеспечивает корректную нормировку f_dist независимо от размера карты
+        # (Kobe, VC, Berlin имеют разные размеры в миллиметрах).
         xs: list[int] = []
         ys: list[int] = []
         for _node_id, attrs in self.road_graph.nodes(data=True):
@@ -143,8 +143,8 @@ class WorldModel:
 
             node_id = entity.raw_sensor_data.position_on_edge
 
-            # Если position_on_edge не пришёл от сервера, пытаюсь
-            # восстановить узел графа по координатам завала (entity_x/y).
+            # Если position_on_edge не пришёл от ядра, узел графа
+            # восстанавливается по координатам завала (entity_x/y).
             if node_id is None:
                 if entity.entity_x is not None and entity.entity_y is not None:
                     from action.navigation import find_nearest_node
@@ -158,9 +158,9 @@ class WorldModel:
                 if node_id is None:
                     continue
 
-            # Я пропускаю завалы с repair_cost=0: они уже расчищены, но
-            # сервер ещё не прислал deleted_entity_ids. Без этой проверки
-            # полицейские бесконечно отправляли AKClear на пустые завалы.
+            # Завалы с repair_cost=0 пропускаются: они уже расчищены, но
+            # ядро ещё не прислало deleted_entity_ids. Без этой проверки
+            # полицейские агенты бесконечно отправляли AKClear на пустые завалы.
             repair_cost = entity.raw_sensor_data.repair_cost
             if repair_cost is not None and repair_cost <= 0:
                 continue
@@ -205,9 +205,9 @@ class WorldModel:
             self.refuge_ids = list(packet.refuge_ids)
             logger.info("WorldModel: список убежищ сохранён [count=%d, ids=%s]", len(self.refuge_ids), self.refuge_ids)
 
-        # Я НЕ очищаю agents целиком: союзники вне зоны видимости
+        # Полная очистка agents не выполняется: союзники вне зоны видимости
         # сохраняют последнее известное состояние. Без этого social_factor
-        # считал 0 однотипных агентов рядом, даже если они там были.
+        # считал 0 однотипных агентов рядом даже при их фактическом наличии.
         self.update_agents(packet.ally_states)
 
         for eid in packet.deleted_entity_ids:
@@ -220,7 +220,7 @@ class WorldModel:
 
         # Резервный источник position_on_edge: PROP_BLOCKADES дорог даёт
         # обратный индекс blockade_id → road_id. Если у завала в кэше нет
-        # position_on_edge — заполняю из этого индекса.
+        # position_on_edge — поле заполняется из этого индекса.
         if packet.blockade_to_road:
             for blk_id, road_id in packet.blockade_to_road.items():
                 entity = self.tasks.get(blk_id)
@@ -242,10 +242,10 @@ class WorldModel:
         for entity in packet.visible_entities:
             self.last_seen_tick[entity.id] = packet.tick
 
-        # Я НЕ удаляю завалы по давности наблюдения: сервер сам присылает
+        # Удаление завалов по давности наблюдения отключено: ядро присылает
         # deleted_entity_ids при фактической расчистке, а stale-expiry
         # приводила к циклу «забыл завал → построил путь сквозь него →
-        # уперся → добавил обратно → забыл» (Kobe, узкие улицы).
+        # упёрся → добавил обратно → забыл» (Kobe, узкие улицы).
         self.refresh_blockade_weights()
 
         logger.debug(
@@ -315,7 +315,7 @@ class WorldModel:
                     "entity_x": entity.entity_x if entity.entity_x is not None else existing.entity_x,
                     "entity_y": entity.entity_y if entity.entity_y is not None else existing.entity_y,
                     # is_ally — неизменяемое свойство типа сущности (CIVILIAN vs
-                    # союзный агент), отследил по URN при первом наблюдении.
+                    # союзный агент), определяется по URN при первом наблюдении.
                     "is_ally": entity.is_ally or existing.is_ally,
                 }
             )
