@@ -1,7 +1,6 @@
 # --- Каталоги, не входящие в репозиторий ---
 rcrs-server/
 rules/
-.claude/
 
 # --- macOS ---
 .DS_Store
