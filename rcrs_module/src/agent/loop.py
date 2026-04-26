@@ -481,9 +481,15 @@ def run_field_agent(
                 )
 
                 if agent_type == AgentType.POLICE_FORCE:
-                    raw_min_d = _min_distance_blockade_to_important(
-                        entity, world_model,
-                    )
+                    # O(1) ожидаемое: spatial-grid важных точек строится
+                    # один раз в такт внутри WorldModel. Без этого был
+                    # вложенный цикл O(M·(M+R+A)) на каждом шаге utility,
+                    # что нарушало заявленную линейность по M.
+                    bpos = _entity_world_position(entity, world_model)
+                    if bpos is None:
+                        raw_min_d = float("inf")
+                    else:
+                        raw_min_d = world_model.nearest_important_distance(bpos[0], bpos[1])
                     if raw_min_d == float("inf"):
                         task_distance = 1.0e9
                     else:
@@ -612,7 +618,14 @@ def run_field_agent(
                     except ZeroDivisionError:
                         t_work_sel = 0.0
                     if agent_type == AgentType.POLICE_FORCE:
-                        raw_min_d = _min_distance_blockade_to_important(sel_entity, world_model)
+                        # Тот же быстрый путь O(1) через spatial-grid, что и
+                        # выше — разложение utility для метрик не должно
+                        # ломать заявленную сложность.
+                        bpos_sel = _entity_world_position(sel_entity, world_model)
+                        if bpos_sel is None:
+                            raw_min_d = float("inf")
+                        else:
+                            raw_min_d = world_model.nearest_important_distance(bpos_sel[0], bpos_sel[1])
                         td_sel = 1.0e9 if raw_min_d == float("inf") else raw_min_d / POLICE_URGENCY_DISTANCE_SCALE
                     else:
                         td_sel = sel_entity.computed_metrics.path_distance

@@ -2,21 +2,117 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import networkx as nx
 
 from .entities import (
-    AgentState, EntityType, MapEdge, MapNode, PerceptionPacket, VisibleEntity,
+    AgentState, AgentType, EntityType, MapEdge, MapNode, PerceptionPacket, VisibleEntity,
     estimate_death_time, compute_total_area,
 )
 from config import (
     BLOCKADE_EDGE_PENALTY, BLOCKADE_PENALTY_MAX, BLOCKADE_REPAIR_COST_DIVISOR,
+    SOCIAL_RADIUS,
 )
 from decision.utility.distance import MAX_MAP_DISTANCE
 
 
 logger = logging.getLogger(__name__)
+
+
+class _SpatialGrid:
+    """Я индексирую точки {(x, y)} в равномерной сетке для O(1)-запросов
+    «сколько точек попадает в радиус r от заданной точки».
+
+    Размер ячейки выбираю равным радиусу запроса — тогда каждая выборка
+    охватывает 9 соседних ячеек (3×3 окно), и при равномерном распределении
+    запрос обрабатывается за O(1) ожидаемое время. Без индекса f_social
+    тратил бы O(N) на каждую задачу, давая O(M·N) суммарно по такту.
+    """
+
+    __slots__ = ("cell_size", "_buckets")
+
+    def __init__(self, cell_size: float) -> None:
+        if cell_size <= 0:
+            raise ValueError("SpatialGrid: cell_size должен быть положительным")
+        self.cell_size: float = float(cell_size)
+        self._buckets: Dict[Tuple[int, int], List[Tuple[int, int, int]]] = {}
+
+    def insert(self, key: int, x: int, y: int) -> None:
+        cell = (int(x // self.cell_size), int(y // self.cell_size))
+        self._buckets.setdefault(cell, []).append((key, int(x), int(y)))
+
+    def count_in_radius(
+        self,
+        x: int,
+        y: int,
+        radius: float,
+        exclude_key: Optional[int] = None,
+    ) -> int:
+        if radius <= 0:
+            return 0
+        ring = max(1, int(math.ceil(radius / self.cell_size)))
+        r2 = radius * radius
+        cx = int(x // self.cell_size)
+        cy = int(y // self.cell_size)
+        count = 0
+        for dx in range(-ring, ring + 1):
+            for dy in range(-ring, ring + 1):
+                bucket = self._buckets.get((cx + dx, cy + dy))
+                if bucket is None:
+                    continue
+                for (k, px, py) in bucket:
+                    if k == exclude_key:
+                        continue
+                    ddx = px - x
+                    ddy = py - y
+                    if ddx * ddx + ddy * ddy < r2:
+                        count += 1
+        return count
+
+    def nearest_distance(self, x: int, y: int) -> float:
+        """Возвращаю евклидово расстояние до ближайшей точки индекса (∞ если пуст).
+
+        Реализую расширяющийся ring-search: расширяю кольцо проверяемых ячеек,
+        пока не накопим хотя бы одну точку, и затем ещё на одно кольцо, чтобы
+        гарантированно покрыть кандидатов на границе. Для разреженного грид'а
+        даёт O(1) ожидаемое время — ключевая оптимизация для f_urgency полиции,
+        иначе на каждый блокадный entity мы итерировали бы все важные объекты.
+        """
+        if not self._buckets:
+            return float("inf")
+        cx = int(x // self.cell_size)
+        cy = int(y // self.cell_size)
+
+        # Ограничение по охвату индекса, чтобы не зависнуть на «дальних» запросах.
+        max_ring = 0
+        for (kx, ky) in self._buckets.keys():
+            r = max(abs(kx - cx), abs(ky - cy))
+            if r > max_ring:
+                max_ring = r
+
+        best = float("inf")
+        found_at_ring: Optional[int] = None
+        for ring in range(0, max_ring + 1):
+            ring_min, ring_max = -ring, ring + 1
+            for dx in range(ring_min, ring_max):
+                for dy in range(ring_min, ring_max):
+                    if max(abs(dx), abs(dy)) != ring:
+                        continue  # обхожу только периметр кольца
+                    bucket = self._buckets.get((cx + dx, cy + dy))
+                    if not bucket:
+                        continue
+                    for (_, px, py) in bucket:
+                        d = math.hypot(px - x, py - y)
+                        if d < best:
+                            best = d
+                            if found_at_ring is None:
+                                found_at_ring = ring
+            # Если нашёл точку и расширил поиск ещё на одно кольцо —
+            # глобальный минимум гарантирован.
+            if found_at_ring is not None and ring >= found_at_ring + 1:
+                break
+        return best
 
 
 class WorldModel:
@@ -38,6 +134,16 @@ class WorldModel:
         # Индекс node_id → set of blockade entity_ids.
         # Обновляется в refresh_blockade_weights, O(1) поиск на пути.
         self.blockades_by_node: Dict[int, set[int]] = {}
+
+        # Spatial-индексы на такт. Перестраиваю один раз в apply_perception
+        # и держу до следующего пакета восприятия. Ключи — AgentType
+        # (для f_social) и специальные тэги для police-целей. Любой запрос
+        # к этим индексам идёт за O(1) ожидаемое время вместо O(N).
+        self._ally_indexes: Dict["AgentType", "_SpatialGrid"] = {}
+        self._important_points_grid: Optional[_SpatialGrid] = None
+        # Я лениво строю important_points-grid только если кто-то его запросил
+        # (полиция в этом такте). Кэш сбрасываю на каждом apply_perception.
+        self._important_points_grid_built: bool = False
 
         logger.info("WorldModel: инициализированы пустой кэш и дорожный граф")
 
@@ -248,12 +354,126 @@ class WorldModel:
         # уперся → добавил обратно → забыл» (Kobe, узкие улицы).
         self.refresh_blockade_weights()
 
+        # Пересобираю per-tick spatial-индексы.
+        self._rebuild_ally_indexes()
+        # Important-points-grid (для f_urgency полиции) лениво
+        # пересоберётся при первом запросе nearest_important_distance.
+        self._important_points_grid = None
+        self._important_points_grid_built = False
+
         logger.debug(
             "WorldModel: пакет восприятия применён [tick=%d, visible_entities=%d, allies=%d]",
             packet.tick,
             len(packet.visible_entities),
             len(packet.ally_states),
         )
+
+    # ------------------------------------------------------------------
+    # Per-tick spatial-индексы для O(M) вычисления полезности.
+    # ------------------------------------------------------------------
+
+    def _rebuild_ally_indexes(self, cell_size: float = SOCIAL_RADIUS) -> None:
+        """Я перестраиваю spatial-индекс союзников по типу. Вызывается раз
+        в такт после apply_perception. Точки с нулевыми координатами
+        пропускаю — это «неизвестные» позиции, попадание в радиус было бы
+        ложным."""
+        self._ally_indexes = {}
+        for ally in self.agents.values():
+            x, y = ally.position.x, ally.position.y
+            if x == 0 and y == 0:
+                continue
+            grid = self._ally_indexes.get(ally.type)
+            if grid is None:
+                grid = _SpatialGrid(cell_size)
+                self._ally_indexes[ally.type] = grid
+            grid.insert(ally.id, x, y)
+
+    def count_allies_in_radius(
+        self,
+        target_x: int,
+        target_y: int,
+        agent_type: "AgentType",
+        exclude_agent_id: int,
+        radius: float,
+    ) -> int:
+        """Я возвращаю количество союзников типа agent_type, попадающих в
+        евклидов радиус radius от точки (target_x, target_y). Вызывает
+        spatial-grid → O(1) ожидаемое время. Если индекс ещё не построен
+        (например, в тестах без apply_perception), строю на лету —
+        запас прочности для совместимости со старыми тестами."""
+        if not self._ally_indexes:
+            self._rebuild_ally_indexes()
+        grid = self._ally_indexes.get(agent_type)
+        if grid is None:
+            return 0
+        return grid.count_in_radius(target_x, target_y, radius, exclude_key=exclude_agent_id)
+
+    def _build_important_points_grid(self) -> None:
+        """Собираю «важные точки» (нерасчищенные нерасчётные цели + убежища +
+        полевые союзники не-полиции) в spatial-grid. Вызываю один раз за
+        такт, lazy. Без этого кэша полицейский f_urgency
+        перепроверял бы все важные объекты на каждый завал — O(M·(M+R+A))."""
+        cell_size = max(SOCIAL_RADIUS, 1.0)
+        grid = _SpatialGrid(cell_size)
+        # Ключ кэша уникален для каждой точки, но нам важно только число
+        # вхождений в bucket — конкретные ID не используются.
+        synthetic_key = 0
+        for task in self.tasks.values():
+            if task.type == EntityType.BLOCKADE:
+                continue
+            if task.type in (EntityType.CIVILIAN, EntityType.HUMAN):
+                hp = task.raw_sensor_data.hp
+                if hp is not None and hp == 0:
+                    continue
+            if task.type == EntityType.BUILDING:
+                fieryness = task.raw_sensor_data.fieryness
+                if fieryness is None or fieryness not in {1, 2, 3}:
+                    continue
+            tx, ty = self._task_world_xy(task)
+            if tx is None or ty is None:
+                continue
+            synthetic_key += 1
+            grid.insert(synthetic_key, tx, ty)
+
+        for refuge_id in self.refuge_ids:
+            attrs = self.road_graph.nodes.get(refuge_id, {})
+            rx = attrs.get("x")
+            ry = attrs.get("y")
+            if rx is None or ry is None:
+                continue
+            if rx == 0 and ry == 0:
+                continue
+            synthetic_key += 1
+            grid.insert(synthetic_key, int(rx), int(ry))
+
+        for ally in self.agents.values():
+            if ally.type not in (AgentType.FIRE_BRIGADE, AgentType.AMBULANCE_TEAM):
+                continue
+            ax, ay = ally.position.x, ally.position.y
+            if ax == 0 and ay == 0:
+                continue
+            synthetic_key += 1
+            grid.insert(synthetic_key, ax, ay)
+
+        self._important_points_grid = grid
+        self._important_points_grid_built = True
+
+    def nearest_important_distance(self, blockade_x: int, blockade_y: int) -> float:
+        """O(1) ожидаемое — расстояние от точки завала до ближайшей «важной»
+        точки (горящее здание, заваленный гражданский, убежище или активный
+        союзник не-полиции). Используется в police-варианте f_urgency."""
+        if not self._important_points_grid_built:
+            self._build_important_points_grid()
+        if self._important_points_grid is None:
+            return float("inf")
+        return self._important_points_grid.nearest_distance(blockade_x, blockade_y)
+
+    @staticmethod
+    def _task_world_xy(task: VisibleEntity) -> Tuple[Optional[int], Optional[int]]:
+        if task.entity_x is not None and task.entity_y is not None:
+            if task.entity_x != 0 or task.entity_y != 0:
+                return int(task.entity_x), int(task.entity_y)
+        return None, None
 
     def update_perception(self, visible_entities: Iterable[VisibleEntity]) -> None:
         for entity in visible_entities:

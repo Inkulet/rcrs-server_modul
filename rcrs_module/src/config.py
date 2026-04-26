@@ -62,9 +62,13 @@ POLICE_WEIGHTS_OVERRIDE = _parse_weights("police")
 # Параметры связи
 # ---------------------------------------------------------------------------
 
-# Глобальный тумблер всей радио-связи. Если выключен, агент не отправляет
-# AKSay и игнорирует входящие hearing-сообщения из KASense.
-RADIO_ENABLED: bool = _cfg.getboolean("communication", "radio_enabled", fallback=True)
+# Глобальный тумблер всей радио-связи. По умолчанию я держу его ВЫКЛЮЧЕННЫМ —
+# это соответствует заявленной в диплом полной коммуникационной автономности:
+# координация ведётся только через разделяемую модель мира и социальный фактор
+# f_social, без AKSay-broadcast'ов. Включить координацию через радио можно,
+# поставив radio_enabled = true в [communication] секции agent.cfg
+# (или прямо здесь fallback=True для всех агентов сразу).
+RADIO_ENABLED: bool = _cfg.getboolean("communication", "radio_enabled", fallback=False)
 
 
 def setup_logging() -> None:
