@@ -18,7 +18,7 @@ UNREACHABLE_DISTANCE_THRESHOLD: float = MAX_MAP_DISTANCE * 0.9
 
 
 class NeedRefugeException(RuntimeError):
-    """Сигнал о необходимости направить пожарного в убежище."""
+    """пожарному нужно направиться в убежище."""
 
 
 class PreFilterDispatcher:

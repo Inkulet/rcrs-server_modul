@@ -71,7 +71,7 @@ class RawSensorData(BaseEntityModel):
     repair_cost: Optional[StrictInt] = Field(default=None, ge=0)
     position_on_edge: Optional[StrictInt] = Field(default=None, ge=0)
     # Плоский массив координат вершин полигона: [x0, y0, x1, y1, ...].
-    # Заполняется для Blockade (PROP_APEXES) и Area-сущностей; используется
+    # Приходит для Blockade (PROP_APEXES) и Area-сущностей; используется
     # геометрическими проверками в action/police_geometry.py.
     apexes: Optional[List[StrictInt]] = Field(default=None)
 
@@ -90,11 +90,11 @@ class VisibleEntity(BaseEntityModel):
     utility_score: StrictFloat
     entity_x: Optional[StrictInt] = Field(default=None)
     entity_y: Optional[StrictInt] = Field(default=None)
-    # Признак союзного полевого агента (FireBrigade/AmbulanceTeam/PoliceForce),
-    # попавшего в кэш как VisibleEntity (например, заваленный и нуждающийся
-    # в спасении). Мирное население — всегда is_ally=False.
-    # Используется при валидации действий: AKLoad допустим только на CIVILIAN;
-    # пожарный не приоритезирует союзников-пожарных для AKRescue над гражданскими.
+    # True — если это союзный полевой агент (FireBrigade/AmbulanceTeam/PoliceForce),
+    # который в данный момент попал в кэш как VisibleEntity (например, завален
+    # и нуждается в спасении). Мирное население — всегда is_ally=False.
+    # Нужен для валидации: AKLoad только на CIVILIAN; пожарный не приоритезирует
+    # союзников-пожарных для AKRescue перед гражданскими и т.п.
     is_ally: StrictBool = Field(default=False)
 
 
@@ -103,8 +103,8 @@ class MapNode(BaseEntityModel):
     x: StrictInt
     y: StrictInt
     area_type: Optional[str] = Field(default=None)
-    # Плоский массив координат вершин полигона Area: [x0, y0, x1, y1, ...].
-    # Используется для проверки пересечения линии «агент → следующий узел»
+    # Плоский массив координат вершин полигона Area [x0, y0, x1, y1, ...].
+    # Нужен для проверки пересечения линии «агент → следующий узел»
     # с границами road (intersects_area_edge).
     apexes: Optional[List[StrictInt]] = Field(default=None)
 
@@ -137,18 +137,18 @@ class PerceptionPacket(BaseEntityModel):
     heard_search_target_speakers: dict[int, StrictInt] = Field(default_factory=dict)
 
     # Обратный индекс blockade_id → road_id, извлечённый из PROP_BLOCKADES
-    # дорожных сущностей. Резервный источник position_on_edge на случай,
-    # когда PROP_POSITION для завала не пришёл от ядра.
+    # дорожных сущностей. Используется как резервный источник position_on_edge
+    # в случае, если PROP_POSITION для завала не пришёл.
     blockade_to_road: dict[int, int] = Field(default_factory=dict)
-    # Снимок PROP_BLOCKADES для дорог, реально пришедших в текущем ChangeSet.
-    # Используется для удаления из локального кэша завалов, которые исчезли
-    # с дороги, но ещё не были присланы в deleted_entity_ids.
+    # Снимок содержимого PROP_BLOCKADES для дорог, реально пришедших в текущем
+    # ChangeSet. Нужен, чтобы удалять из локального кэша завалы, которые
+    # исчезли с дороги, но ещё не были присланы в deleted_entity_ids.
     road_blockades: dict[int, List[StrictInt]] = Field(default_factory=dict)
 
 
-# Поправочный коэффициент к наивной оценке hp/damage. Учитывает
-# нелинейный рост damage (рядом с пожаром, нарастающее кровотечение).
-# 0.7 — консервативный «запас» на случай гибели гражданского раньше,
+# Я умножаю наивную оценку hp/damage на этот коэффициент, чтобы учесть
+# нелинейный рост damage (рядом с пожаром, кровотечение нарастает).
+# 0.7 — консервативный «запас» на то, что гражданский умрёт раньше,
 # чем предсказывает линейная экстраполяция.
 DEATH_TIME_SAFETY_FACTOR: float = 0.7
 

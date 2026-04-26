@@ -73,14 +73,13 @@ def _select_blockade_apex_clear(
     blockade_ids: set[int] | list[int],
     aim_xy: Optional[tuple[int, int]],
 ) -> Optional[tuple[int, int, int, int]]:
-    # Эталон — DefaultActionExtClear (adf-core-python): без Shapely и
-    # без проверки пересечений — в 1-секундный тик python-агентов это
+    # Эталон — DefaultActionExtClear (adf-core-python): никакой Shapely,
+    # никакой проверки пересечений — в 1-секундный тик python-агентов это
     # прямой путь к таймаутам и «пустым» тактам.
-    # Алгоритм: выбирается ближайший по math.hypot завал в допустимом
-    # радиусе (POLICE_CLEAR_MAX_DISTANCE + запас на габариты), удар
-    # конусом направляется в сторону aim_xy (вектор движения). Если
-    # aim_xy не задан — в центр масс завала. Попадание в центр полигона
-    # вероятнее, чем в угол.
+    # Я беру ближайший по math.hypot завал в допустимом радиусе
+    # (POLICE_CLEAR_MAX_DISTANCE + запас на габариты) и стреляю конусом
+    # в сторону aim_xy (вектор движения). Если aim_xy не задан — в центр
+    # масс завала. Попасть в центр тела полигона вероятнее, чем в угол.
     ax, ay = agent_state.position.x, agent_state.position.y
     range_limit = POLICE_CLEAR_MAX_DISTANCE + POLICE_CLEAR_RANGE_SLACK
     best: Optional[tuple[float, int, int, int, int]] = None
@@ -302,7 +301,7 @@ def _execute_at_target(
                     "Executor (fire/rescue): спасение пропущено — цель уже откопана, передаётся медикам [target_id=%d, buriedness=%s, tick=%d]",
                     target_id, buriedness, tick,
                 )
-                # Откопан — цель передаётся медикам (удаляется из своих задач).
+                # Откопан — передаю цель медикам (убираю из своих задач).
                 world_model.remove_task(target_id)
                 return False, True, False, None
             client.send_rescue(tick, target_id)
@@ -392,10 +391,10 @@ def _ambulance_at_target(
     entity: object,
     world_model: WorldModel,
 ) -> tuple[bool, bool, bool, int | None]:
-    # Возвращается 4-кортеж в едином формате с dispatch_action:
+    # Возвращаю 4-кортеж в едином формате с dispatch_action:
     # (target_valid, unreachable, working, attempted_blockade).
-    # Ранее возвращалось 3 элемента, из-за чего агент-медик падал
-    # с ValueError на распаковке сразу после AKLoad и не ехал в убежище.
+    # Раньше здесь было 3 элемента — агент-медик падал с ValueError
+    # на распаковке сразу после AKLoad, из-за чего не ехал в убежище.
     if entity is None:
         logger.warning(
             "Executor (ambulance): сущность отсутствует в кэше, цель сброшена [target_id=%d, tick=%d]",
@@ -465,10 +464,10 @@ def _execute_move(
     dest_x, dest_y = tx, ty
 
     if agent_type == AgentType.POLICE_FORCE:
-        # По схеме ADF: учитываются завалы на текущем И следующем узле пути.
-        # Завал мог «разделиться» при частичной расчистке (центр сместился,
-        # ID сменился), но широкий радиус поиска «ближайший к агенту завал»
-        # гарантирует его обнаружение.
+        # Как в ADF: беру завалы на текущем И следующем узле пути.
+        # Завал мог «разделиться» при частичной расчистке: центр уехал,
+        # ID сменился — но если я всегда смотрю на ближайший к себе
+        # завал в широком радиусе, я его поймаю.
         local_blockades = world_model.blockades_by_node.get(agent_node_id, set())
         next_blockades: set[int] = set()
         if path and len(path) > 1:
@@ -476,8 +475,8 @@ def _execute_move(
         blockade_set = set(local_blockades) | set(next_blockades)
 
         if blockade_set:
-            # Удар направляется в сторону следующего узла пути —
-            # прорубается прямой туннель, а не обочина.
+            # Целимся всегда в сторону следующего узла пути — прорубаю
+            # прямой туннель, а не ковыряю обочину.
             aim_x, aim_y = dest_x, dest_y
             if path and len(path) > 1:
                 nxt = _node_xy(world_model, path[1])

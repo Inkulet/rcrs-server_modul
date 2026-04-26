@@ -31,7 +31,7 @@ from config import (
 )
 from decision.utility.distance import distance_factor_precomputed
 from decision.utility.effort import compute_effort
-from decision.utility.social import SocialFactorCache, social_factor
+from decision.utility.social import social_factor
 from decision.utility.urgency import compute_urgency
 from metrics import MetricsCollector
 from action.executor import dispatch_action, try_clear_local_blockade
@@ -136,84 +136,10 @@ def _entity_world_position(entity: VisibleEntity, world_model: WorldModel) -> tu
     return None
 
 
-def _blockade_node_id(blockade: VisibleEntity, world_model: WorldModel) -> int | None:
-    pos_edge = blockade.raw_sensor_data.position_on_edge
-    if pos_edge is not None and world_model.road_graph.has_node(pos_edge):
-        return pos_edge
-    for node_id, blk_ids in world_model.blockades_by_node.items():
-        if blockade.id in blk_ids:
-            return node_id
-    return None
-
-
-def _precompute_police_urgency_cache(
-    world_model: WorldModel,
-) -> dict[int, float] | None:
-    # Прекэш расстояний для urgency полиции: multi-source SSSP Dijkstra
-    # из всех «важных» узлов графа даёт для каждого узла расстояние до
-    # ближайшего источника. Стоимость — O((V+E)·log V) за такт вместо
-    # O(B·I) на каждый завал. При отсутствии подходящих источников
-    # возвращается None — вызывающая сторона откатывается на евклидов
-    # fallback внутри _min_distance_blockade_to_important.
-    import networkx as nx
-
-    graph = world_model.road_graph
-    if graph.number_of_nodes() == 0:
-        return None
-
-    sources: set[int] = set()
-
-    for task in world_model.tasks.values():
-        if task.type == EntityType.BLOCKADE:
-            continue
-        if task.type in (EntityType.CIVILIAN, EntityType.HUMAN):
-            hp = task.raw_sensor_data.hp
-            if hp is not None and hp == 0:
-                continue
-        if task.type == EntityType.BUILDING:
-            fieryness = task.raw_sensor_data.fieryness
-            if fieryness is None or fieryness not in {1, 2, 3}:
-                continue
-        pos_edge = task.raw_sensor_data.position_on_edge
-        if pos_edge is not None and graph.has_node(pos_edge):
-            sources.add(pos_edge)
-        elif graph.has_node(task.id):
-            sources.add(task.id)
-
-    for refuge_id in world_model.refuge_ids:
-        if graph.has_node(refuge_id):
-            sources.add(refuge_id)
-
-    for ally in world_model.agents.values():
-        if ally.type not in (AgentType.FIRE_BRIGADE, AgentType.AMBULANCE_TEAM):
-            continue
-        ally_node = ally.position.entity_id
-        if ally_node and graph.has_node(ally_node):
-            sources.add(ally_node)
-
-    if not sources:
-        return None
-
-    try:
-        return nx.multi_source_dijkstra_path_length(graph, sources, weight="weight")
-    except (nx.NodeNotFound, nx.NetworkXError) as exc:
-        logger.warning(
-            "Police urgency cache: multi_source_dijkstra не выполнен, будет использован евклидов fallback — %s",
-            exc,
-        )
-        return None
-
-
 def _min_distance_blockade_to_important(
     blockade: VisibleEntity,
     world_model: WorldModel,
-    node_dist_cache: dict[int, float] | None = None,
 ) -> float:
-    if node_dist_cache is not None:
-        blk_node = _blockade_node_id(blockade, world_model)
-        if blk_node is not None and blk_node in node_dist_cache:
-            return float(node_dist_cache[blk_node])
-
     bpos = _entity_world_position(blockade, world_model)
     if bpos is None:
         return float("inf")
@@ -372,8 +298,8 @@ def run_field_agent(
     )
     client.set_metrics(metrics)
 
-    # Текущие веса агрегатора фиксируются однократно за сессию: они
-    # попадают в per-tick CSV (для ablation) и в summary.json (ablation_config).
+    # Фиксирую текущие веса агрегатора один раз в session — они идут в
+    # per-tick CSV (для ablation) и в summary.json (ablation_config).
     metrics.set_tick_fields(
         w_c=aggregator.w_c, w_d=aggregator.w_d,
         w_e=aggregator.w_e, w_n=aggregator.w_n,
@@ -529,17 +455,6 @@ def run_field_agent(
             )
 
             with metrics.phase("utility"):
-              social_cache = SocialFactorCache(
-                  world_model,
-                  agent_type,
-                  current_agent_id=agent_state.id,
-                  radius=SOCIAL_RADIUS,
-              )
-              police_dist_cache = (
-                  _precompute_police_urgency_cache(world_model)
-                  if agent_type == AgentType.POLICE_FORCE
-                  else None
-              )
               utilities: dict[int, float] = {}
               for entity in filtered_tasks:
                 try:
@@ -566,10 +481,15 @@ def run_field_agent(
                 )
 
                 if agent_type == AgentType.POLICE_FORCE:
-                    raw_min_d = _min_distance_blockade_to_important(
-                        entity, world_model,
-                        node_dist_cache=police_dist_cache,
-                    )
+                    # O(1) ожидаемое: spatial-grid важных точек строится
+                    # один раз в такт внутри WorldModel. Без этого был
+                    # вложенный цикл O(M·(M+R+A)) на каждом шаге utility,
+                    # что нарушало заявленную линейность по M.
+                    bpos = _entity_world_position(entity, world_model)
+                    if bpos is None:
+                        raw_min_d = float("inf")
+                    else:
+                        raw_min_d = world_model.nearest_important_distance(bpos[0], bpos[1])
                     if raw_min_d == float("inf"):
                         task_distance = 1.0e9
                     else:
@@ -587,7 +507,6 @@ def run_field_agent(
                     task_distance=task_distance,
                     social_radius=SOCIAL_RADIUS,
                     max_map_distance=world_model.max_map_distance,
-                    social_cache=social_cache,
                 )
                 utilities[entity.id] = utility
                 logger.debug(
@@ -699,10 +618,14 @@ def run_field_agent(
                     except ZeroDivisionError:
                         t_work_sel = 0.0
                     if agent_type == AgentType.POLICE_FORCE:
-                        raw_min_d = _min_distance_blockade_to_important(
-                            sel_entity, world_model,
-                            node_dist_cache=police_dist_cache,
-                        )
+                        # Тот же быстрый путь O(1) через spatial-grid, что и
+                        # выше — разложение utility для метрик не должно
+                        # ломать заявленную сложность.
+                        bpos_sel = _entity_world_position(sel_entity, world_model)
+                        if bpos_sel is None:
+                            raw_min_d = float("inf")
+                        else:
+                            raw_min_d = world_model.nearest_important_distance(bpos_sel[0], bpos_sel[1])
                         td_sel = 1.0e9 if raw_min_d == float("inf") else raw_min_d / POLICE_URGENCY_DISTANCE_SCALE
                     else:
                         td_sel = sel_entity.computed_metrics.path_distance
@@ -731,7 +654,6 @@ def run_field_agent(
                         f_s = social_factor(
                             world_model, tgt_position_sel, agent_state.type,
                             current_agent_id=agent_state.id, radius=SOCIAL_RADIUS,
-                            cache=social_cache,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.debug("Loop: разложение utility для метрик не выполнено — %s", exc)

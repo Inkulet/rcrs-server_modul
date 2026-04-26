@@ -95,8 +95,8 @@ def compute_urgency(
             if entity is None:
                 logger.warning("Urgency (fire): сущность не передана [agent_id=%s]", agent_state.id)
                 return 0.0
-            # Для заваленных людей пожарный исполняет роль спасателя:
-            # приоритет рассчитывается по TTL (hp/damage), как у медика.
+            # Для заваленных людей пожарный играет роль спасателя:
+            # приоритет рассчитываю по TTL (hp/damage), как у медика.
             if entity.type in (EntityType.CIVILIAN, EntityType.HUMAN):
                 if t_travel is None or t_work is None:
                     logger.warning(

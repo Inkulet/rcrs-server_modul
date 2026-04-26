@@ -453,7 +453,10 @@ class TestParseKaSense:
         assert 42 in packet.deleted_entity_ids
         assert 99 in packet.deleted_entity_ids
 
-    def test_heard_target_claim_parses_role(self) -> None:
+    def test_heard_target_claim_parses_role(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # По умолчанию RADIO_ENABLED=False (полная коммуникационная автономность);
+        # для проверки парсинга hearing-claim'ов локально включаю радио в codec.
+        monkeypatch.setattr("network.codec.RADIO_ENABLED", True)
         proto = self._make_sense(agent_id=1, tick=3)
         _append_hearing_say(
             proto,
@@ -484,7 +487,10 @@ class TestParseKaSense:
         assert packet.heard_target_roles == {}
         assert packet.heard_target_speakers == {}
 
-    def test_search_claim_is_parsed_separately_from_target_claim(self) -> None:
+    def test_search_claim_is_parsed_separately_from_target_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # По умолчанию RADIO_ENABLED=False; включаю локально, чтобы убедиться,
+        # что SEARCH_CLAIM не попадает в heard_target_ids (а уходит в heard_search_*).
+        monkeypatch.setattr("network.codec.RADIO_ENABLED", True)
         proto = self._make_sense(agent_id=1, tick=3)
         _append_hearing_say(
             proto,

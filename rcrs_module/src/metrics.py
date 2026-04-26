@@ -32,9 +32,9 @@ def _fmt(xs: list[float]) -> tuple[float, float, float, float, float]:
     )
 
 
-# Фазы такта, по которым ведутся замеры времени. Порядок влияет
-# только на оформление отчёта. Все фазы атомарны (start→stop без
-# вложенности), кроме `tick` — он охватывает весь такт целиком.
+# Фазы, которые я замеряю каждый такт. Порядок влияет только на
+# оформление отчёта. Все фазы атомарны (start→stop без вложенности),
+# кроме `tick` — он охватывает всё.
 _PHASES: tuple[str, ...] = (
     "perception",     # разбор KASense + world_model.apply_perception
     "dijkstra",       # fill_path_distances (O(V+E·logV) на всю карту)
@@ -47,8 +47,8 @@ _PHASES: tuple[str, ...] = (
     "tick",           # полный такт (sanity check, сумма ≈ tick)
 )
 
-# Счётчики событий: агрегируются по типам отправленных команд и по
-# событиям принятия решений (hysteresis, blacklist, stuck).
+# Счётчики событий — я агрегирую по типам команд и по событиям
+# решений (hysteresis, blacklist, stuck).
 _COUNTERS: tuple[str, ...] = (
     "ak_move", "ak_rescue", "ak_extinguish", "ak_clear_area",
     "ak_load", "ak_unload", "ak_rest", "ak_say",
@@ -234,7 +234,7 @@ class MetricsCollector:
 
     def record_event(self, kind: str, **fields: Any) -> None:
         if not self.enabled or self._events_csv_path is None:
-            # Freeze-события учитываются и без CSV — через _freeze_count.
+            # Freeze-события я считаю и без CSV — через _freeze_count.
             return
         try:
             if self._events_csv_writer is None:
