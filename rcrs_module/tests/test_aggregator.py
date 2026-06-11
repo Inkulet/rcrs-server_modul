@@ -42,8 +42,11 @@ class TestAggregatorFormula:
     """Я проверяю, что агрегатор вычисляет именно формулу диплома, а не другую."""
 
     def test_formula_sign_convention(self) -> None:
-        """Я проверяю знаки в формуле: f_urgency (+), f_dist (−), f_effort (+), f_social (−).
+        """Я проверяю знаки в формуле: f_urgency (+), f_dist (−), f_effort (−), f_social (−).
 
+        Срочность — единственная выгода (Benefit); расстояние, трудоёмкость и
+        социальный фактор — штрафы (Cost), как в формуле полезности диплома:
+        U = w_c·f_urgency − (w_d·f_dist + w_e·f_effort + w_n·f_social).
         f_social вычитается — это реализует антироевой механизм (Критерий 4 диплома):
         чем больше союзников уже работают с целью, тем ниже её полезность для данного агента.
         Я патчу все четыре фактора и вручную считаю ожидаемый результат.
@@ -66,8 +69,8 @@ class TestAggregatorFormula:
                 target_position=make_target_pos(),
             )
 
-        # U = 0.4*0.8 - 0.2*0.3 + 0.2*0.5 - 0.2*0.2 = 0.32 - 0.06 + 0.10 - 0.04 = 0.32
-        expected = W_C * 0.8 - W_D * 0.3 + W_E * 0.5 - W_N * 0.2
+        # U = 0.4*0.8 - 0.2*0.3 - 0.2*0.5 - 0.2*0.2 = 0.32 - 0.06 - 0.10 - 0.04 = 0.12
+        expected = W_C * 0.8 - W_D * 0.3 - W_E * 0.5 - W_N * 0.2
         assert abs(result - expected) < 1e-9
 
     def test_weights_sum_to_one(self) -> None:
@@ -120,8 +123,8 @@ class TestAggregatorFormula:
 
         assert u_near > u_far
 
-    def test_increasing_effort_increases_utility(self) -> None:
-        """Я проверяю: чем выше f_effort, тем выше U_ij — трудоёмкость — это Benefit."""
+    def test_increasing_effort_decreases_utility(self) -> None:
+        """Я проверяю: чем выше f_effort, тем ниже U_ij — трудоёмкость — это Cost (штраф)."""
         aggregator = make_aggregator()
         agent = make_agent(agent_type=AgentType.FIRE_BRIGADE)
         wm = make_world_with_graph()
@@ -140,7 +143,7 @@ class TestAggregatorFormula:
                     agent, make_building(), wm, make_target_pos()
                 )
 
-        assert u_hard > u_easy
+        assert u_easy > u_hard
 
     def test_zero_division_returns_zero(self) -> None:
         """Я проверяю защиту: если внутри возникает ZeroDivisionError, возвращаю 0.0."""

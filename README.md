@@ -8,6 +8,12 @@ _Модуль распределения задач между автономн�
 
 </div>
 
+[![CI](https://github.com/Inkulet/rcrs-server_modul/actions/workflows/ci.yml/badge.svg)](https://github.com/Inkulet/rcrs-server_modul/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-281%20passed-brightgreen.svg)](rcrs_module/tests)
+[![Release](https://img.shields.io/github/v/release/Inkulet/rcrs-server_modul)](https://github.com/Inkulet/rcrs-server_modul/releases)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ED.svg?logo=docker&logoColor=white)](Dockerfile)
+
 ---
 
 ## Оглавление
@@ -197,6 +203,22 @@ cd rcrs_module
 python3 -m venv venv
 source venv/bin/activate          # или venv\Scripts\activate на Windows
 pip install -r requirements.txt
+```
+
+### Запуск в Docker
+
+Образ содержит только Python-модуль агентов; ядро симулятора
+запускается отдельно (на хосте или в соседнем контейнере):
+
+```bash
+docker build -t rcrs-module .
+
+# агент подключается к ядру на хосте
+docker run --rm --network host rcrs-module \
+    --agent-type FIRE_BRIGADE --host 127.0.0.1 --port 27931
+
+# прогон юнит-тестов внутри контейнера
+docker run --rm --entrypoint python rcrs-module -m pytest tests/ -q
 ```
 
 ### Запуск одного агента
